@@ -32,21 +32,23 @@ PROJECT_ID = "project_testphp.vulnweb.com"
 #   - "domain_discovery" : WHOIS + Subdomain discovery + DNS (creates initial JSON)
 #   - "port_scan"        : Fast port scanning (updates JSON)
 #   - "http_probe"       : HTTP probing and technology detection (updates JSON)
+#   - "resource_enum"    : Endpoint discovery & classification (Katana crawl + form parsing)
 #   - "vuln_scan"        : Web vulnerability scanning + MITRE CWE/CAPEC enrichment (updates JSON)
 #   - "github"           : GitHub secret hunting (creates separate JSON)
 #
-# Pipeline: domain_discovery -> port_scan -> http_probe -> vuln_scan -> github
+# Pipeline: domain_discovery -> port_scan -> http_probe -> resource_enum -> vuln_scan -> github
 #
 # Note: vuln_scan automatically includes MITRE CWE/CAPEC enrichment for all CVEs found.
 #       Configure MITRE enrichment settings in the "MITRE CWE/CAPEC Enrichment" section below.
 #
 # Examples:
-#   ["domain_discovery"]                                         - Only domain recon
-#   ["domain_discovery", "port_scan", "http_probe"]              - Recon + port/HTTP probing
-#   ["domain_discovery", "port_scan", "http_probe", "vuln_scan"] - Full web scan (default)
-#   ["domain_discovery", "port_scan", "http_probe", "vuln_scan", "github"] - Complete scan
+#   ["domain_discovery"]                                                      - Only domain recon
+#   ["domain_discovery", "port_scan", "http_probe"]                           - Recon + port/HTTP probing
+#   ["domain_discovery", "port_scan", "http_probe", "resource_enum"]          - + endpoint discovery
+#   ["domain_discovery", "port_scan", "http_probe", "resource_enum", "vuln_scan"] - Full web scan (default)
+#   ["domain_discovery", "port_scan", "http_probe", "resource_enum", "vuln_scan", "github"] - Complete scan
 
-SCAN_MODULES = ["domain_discovery", "port_scan", "http_probe", "vuln_scan"]
+SCAN_MODULES = ["domain_discovery", "port_scan", "http_probe", "resource_enum", "vuln_scan"]
 UPDATE_GRAPH_DB = True
 
 # Hide your real IP during subdomain enumeration (uses Tor + proxychains)
@@ -121,12 +123,6 @@ NAABU_EXCLUDE_CDN = True
 
 # Display CDN information in output
 NAABU_DISPLAY_CDN = True
-
-# Service name detection
-# NOTE: Naabu's -sD flag exists but is NOT YET IMPLEMENTED
-# RedAmon uses internal port-to-service mapping instead (see get_service_name())
-# This setting is currently ignored until naabu implements service discovery
-NAABU_SERVICE_DETECTION = True
 
 # Skip host discovery (assume all hosts are up)
 # Recommended: True for web targets, False for network discovery
@@ -347,7 +343,7 @@ NUCLEI_TAGS = []  # Empty = no tag filter
 
 # Template tags to exclude
 # Example: ["dos", "fuzz"] - exclude denial of service
-NUCLEI_EXCLUDE_TAGS = ["dos", "ddos"]
+NUCLEI_EXCLUDE_TAGS = []
 
 # Enable DAST mode (-dast flag) for active vulnerability fuzzing
 # This mode actively injects payloads to find XSS, SQLi, etc.
@@ -381,7 +377,178 @@ KATANA_TIMEOUT = 300  # 5 minutes
 KATANA_JS_CRAWL = True
 
 # Only keep URLs with query parameters (for DAST fuzzing)
-KATANA_PARAMS_ONLY = True
+KATANA_PARAMS_ONLY = False
+
+# Exclude patterns - skip static assets and image optimization endpoints
+# These generate many URLs but are usually not vulnerable to injection attacks
+KATANA_EXCLUDE_PATTERNS = [
+    # ===================
+    # Next.js / React
+    # ===================
+    "/_next/image",          # Next.js image optimization
+    "/_next/static",         # Next.js static files
+    "/_next/data",           # Next.js data fetching
+    "/__nextjs",             # Next.js internals
+
+    # ===================
+    # Nuxt.js / Vue.js
+    # ===================
+    "/_nuxt/",               # Nuxt.js static files
+    "/__nuxt",               # Nuxt.js internals
+
+    # ===================
+    # Angular
+    # ===================
+    "/runtime.",             # Angular runtime
+    "/polyfills.",           # Angular polyfills
+    "/vendor.",              # Angular vendor bundle
+
+    # ===================
+    # Webpack / Build Tools
+    # ===================
+    "/webpack",              # Webpack internals
+    "/chunk.",               # Webpack chunks
+    ".chunk.js",             # Chunk files
+    ".bundle.js",            # Bundle files
+    "hot-update",            # HMR updates
+
+    # ===================
+    # Static Files / CDN
+    # ===================
+    "/static/",              # Generic static files
+    "/public/",              # Public assets
+    "/dist/",                # Distribution files
+    "/build/",               # Build output
+    "/lib/",                 # Library files
+    "/vendor/",              # Vendor files
+    "/node_modules/",        # Node modules (shouldn't be exposed but sometimes is)
+
+    # ===================
+    # Images
+    # ===================
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".avif",
+    ".bmp", ".tiff", ".tif", ".heic", ".heif", ".raw",
+    "/images/", "/img/", "/image/", "/pics/", "/pictures/",
+    "/thumbnails/", "/thumb/", "/thumbs/",
+
+    # ===================
+    # CSS / Stylesheets
+    # ===================
+    ".css", ".scss", ".sass", ".less", ".styl",
+    ".css.map",              # CSS source maps
+    "/css/", "/styles/", "/style/", "/stylesheet/",
+
+    # ===================
+    # JavaScript (non-application)
+    # ===================
+    ".js.map",               # JS source maps
+    ".min.js",               # Minified JS (usually libraries)
+    "/js/lib/", "/js/vendor/", "/js/plugins/",
+    "jquery", "bootstrap.js", "popper.js",  # Common libraries
+
+    # ===================
+    # Fonts
+    # ===================
+    ".woff", ".woff2", ".ttf", ".eot", ".otf",
+    "/fonts/", "/font/", "/webfonts/",
+
+    # ===================
+    # Documents / Downloads
+    # ===================
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".txt", ".rtf", ".odt", ".ods", ".odp",
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2",
+
+    # ===================
+    # Audio / Video
+    # ===================
+    ".mp3", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".webm", ".mkv",
+    ".wav", ".ogg", ".aac", ".m4a", ".flac",
+    "/video/", "/videos/", "/audio/", "/music/", "/sounds/",
+
+    # ===================
+    # WordPress
+    # ===================
+    "/wp-content/uploads/",  # WP uploads
+    "/wp-content/themes/",   # WP themes (static)
+    "/wp-includes/",         # WP core includes
+
+    # ===================
+    # Drupal
+    # ===================
+    "/sites/default/files/", # Drupal files
+    "/core/assets/",         # Drupal core assets
+
+    # ===================
+    # Magento
+    # ===================
+    "/pub/static/",          # Magento static
+    "/pub/media/",           # Magento media
+
+    # ===================
+    # Laravel / PHP
+    # ===================
+    "/storage/",             # Laravel storage
+
+    # ===================
+    # Django / Python
+    # ===================
+    "/staticfiles/",         # Django static
+
+    # ===================
+    # Ruby on Rails
+    # ===================
+    "/packs/",               # Webpacker
+
+    # ===================
+    # CDN / External Resources
+    # ===================
+    "cdn.", "cdnjs.", "cloudflare.", "akamai.", "fastly.",
+    "googleapis.com", "gstatic.com", "cloudfront.net",
+    "unpkg.com", "jsdelivr.net", "bootstrapcdn.com",
+
+    # ===================
+    # Analytics / Tracking (not vulnerable to injection)
+    # ===================
+    "google-analytics", "googletagmanager", "gtag/",
+    "facebook.com/tr", "facebook.net",
+    "analytics.", "tracking.", "pixel.",
+    "hotjar.", "mouseflow.", "clarity.",
+
+    # ===================
+    # Ads
+    # ===================
+    "googlesyndication", "doubleclick", "adservice",
+
+    # ===================
+    # Social Media Widgets
+    # ===================
+    "platform.twitter", "connect.facebook", "platform.linkedin",
+
+    # ===================
+    # Maps
+    # ===================
+    "maps.google", "maps.googleapis",
+    "openstreetmap", "mapbox",
+
+    # ===================
+    # Captcha / Security
+    # ===================
+    "recaptcha", "hcaptcha", "captcha",
+
+    # ===================
+    # Manifest / Service Workers / Config
+    # ===================
+    "manifest.json", "sw.js", "service-worker",
+    "browserconfig.xml", "robots.txt", "sitemap.xml",
+    ".well-known/",
+
+    # ===================
+    # Favicon / Icons
+    # ===================
+    "favicon", "apple-touch-icon", "android-chrome",
+    "/icons/", "/icon/",
+]
 
 # Crawl scope: "dn" (domain name), "rdn" (root domain), "fqdn" (exact hostname)
 # "dn" = stays within same domain
@@ -497,6 +664,135 @@ MITRE_CACHE_TTL_HOURS = 24
 
 
 
+
+
+# =============================================================================
+# Custom Security Checks Configuration
+# =============================================================================
+# These are custom security checks that complement Nuclei scanning.
+# Each check can be individually enabled/disabled.
+# Those security checks are not executed by Nuclei or other project libraries
+
+# Global switch - set to False to skip ALL security checks entirely
+SECURITY_CHECK_ENABLED = True
+
+# --- Direct IP Access Checks ---
+# Detect WAF bypass opportunities and direct IP exposure
+
+# Check if HTTP is accessible directly via IP (no TLS)
+SECURITY_CHECK_DIRECT_IP_HTTP = True
+
+# Check if HTTPS is accessible directly via IP
+SECURITY_CHECK_DIRECT_IP_HTTPS = True
+
+# Check if API endpoints are exposed on direct IP
+SECURITY_CHECK_IP_API_EXPOSED = True
+
+# Check if WAF can be bypassed via direct IP access
+SECURITY_CHECK_WAF_BYPASS = True
+
+# --- TLS/SSL Security Checks ---
+# Note: Most TLS checks (expired, self-signed, weak cipher, mismatch, missing, HSTS)
+# are already covered by Nuclei templates. Only unique checks are kept here.
+
+# Check for certificates expiring soon (within threshold days)
+# Nuclei only checks expired certs, not "expiring soon"
+SECURITY_CHECK_TLS_EXPIRING_SOON = True
+
+# Days before expiry to warn about certificate renewal
+SECURITY_CHECK_TLS_EXPIRY_DAYS = 30
+
+# --- Security Headers Checks ---
+# Note: Common headers (CSP, X-Frame-Options, X-Content-Type-Options, CORS, Server disclosure)
+# are already covered by Nuclei templates. Only less common headers are checked here.
+
+# Referrer-Policy - Controls referrer information leakage
+SECURITY_CHECK_MISSING_REFERRER_POLICY = True
+
+# Permissions-Policy - Controls browser feature access
+SECURITY_CHECK_MISSING_PERMISSIONS_POLICY = True
+
+# Cross-Origin-Opener-Policy - Prevents Spectre-like attacks
+SECURITY_CHECK_MISSING_COOP = True
+
+# Cross-Origin-Resource-Policy - Prevents cross-origin resource loading
+SECURITY_CHECK_MISSING_CORP = True
+
+# Cross-Origin-Embedder-Policy - Required for advanced features
+SECURITY_CHECK_MISSING_COEP = True
+
+# Cache-Control - Detects missing or weak cache control headers
+SECURITY_CHECK_CACHE_CONTROL_MISSING = True
+
+# --- Authentication Security Checks ---
+# Detect authentication-related security issues
+
+# Login form served over HTTP (credentials sent in clear text)
+SECURITY_CHECK_LOGIN_NO_HTTPS = True
+
+# Session cookie missing Secure flag (can be sent over HTTP)
+SECURITY_CHECK_SESSION_NO_SECURE = True
+
+# Session cookie missing HttpOnly flag (accessible via JavaScript)
+SECURITY_CHECK_SESSION_NO_HTTPONLY = True
+
+# Basic authentication used over HTTP (credentials in clear text)
+SECURITY_CHECK_BASIC_AUTH_NO_TLS = True
+
+# --- DNS Security Checks ---
+# Email security and DNS configuration checks
+
+# No SPF record (email spoofing possible)
+SECURITY_CHECK_SPF_MISSING = True
+
+# No DMARC record (no email authentication policy)
+SECURITY_CHECK_DMARC_MISSING = True
+
+# DNSSEC not enabled (DNS responses not cryptographically signed)
+SECURITY_CHECK_DNSSEC_MISSING = True
+
+# Zone transfer enabled (AXFR allowed - data leak)
+SECURITY_CHECK_ZONE_TRANSFER = True
+
+# --- Port/Service Security Checks ---
+# Detect exposed sensitive services
+
+# Admin ports exposed (SSH:22, RDP:3389, VNC:5900)
+SECURITY_CHECK_ADMIN_PORT_EXPOSED = True
+
+# Database ports exposed (MySQL:3306, PostgreSQL:5432, MongoDB:27017)
+SECURITY_CHECK_DATABASE_EXPOSED = True
+
+# Redis without authentication
+SECURITY_CHECK_REDIS_NO_AUTH = True
+
+# Kubernetes API exposed publicly
+SECURITY_CHECK_KUBERNETES_API_EXPOSED = True
+
+# SMTP open relay (accepts mail from any sender to any recipient)
+SECURITY_CHECK_SMTP_OPEN_RELAY = True
+
+# --- Application Security Checks ---
+# Web application security issues
+
+# CSP allows unsafe-inline (XSS protection weakened)
+SECURITY_CHECK_CSP_UNSAFE_INLINE = True
+
+# HTTPS form posts to HTTP endpoint (credentials leak)
+SECURITY_CHECK_INSECURE_FORM_ACTION = True
+
+# --- Rate Limiting Checks ---
+# Detect missing rate limiting protections
+
+# No rate limiting on sensitive endpoints
+SECURITY_CHECK_NO_RATE_LIMITING = True
+
+# --- Security Checks Performance ---
+# Timeout for security check requests (seconds)
+SECURITY_CHECK_TIMEOUT = 10
+
+# Maximum concurrent workers for security checks
+SECURITY_CHECK_MAX_WORKERS = 10
 
 
 # =============================================================================

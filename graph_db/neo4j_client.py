@@ -1559,6 +1559,141 @@ class Neo4jClient:
             if mitre_stats["capec"] > 0:
                 print(f"[+] Created {mitre_stats['capec']} Capec nodes")
 
+            # =========================================================================
+            # Process security_checks - Direct IP access, WAF bypass, etc.
+            # =========================================================================
+            security_checks_created = 0
+            waf_bypass_rels = 0
+
+            for target_host, target_data in by_target.items():
+                security_checks = target_data.get("security_checks", {})
+
+                if not security_checks:
+                    continue
+
+                # Process direct_ip_access checks
+                direct_ip_access = security_checks.get("direct_ip_access", {})
+                ip_address = direct_ip_access.get("ip")
+                checks = direct_ip_access.get("checks", [])
+
+                for check in checks:
+                    try:
+                        check_type = check.get("check_type", "unknown")
+                        severity = check.get("severity", "info")
+                        url = check.get("url", "")
+                        finding = check.get("finding", "")
+                        evidence = check.get("evidence")
+                        status_code = check.get("status_code")
+                        content_length = check.get("content_length")
+
+                        # Generate unique vulnerability ID
+                        vuln_id = f"sec_{check_type}_{ip_address}_{hash(url) % 10000}"
+
+                        # Human-readable names for check types
+                        check_names = {
+                            "direct_ip_http": "HTTP accessible directly via IP",
+                            "direct_ip_https": "HTTPS accessible directly via IP",
+                            "ip_api_exposed": "API endpoint exposed on IP without TLS",
+                            "waf_bypass": "WAF bypass via direct IP access",
+                            "tls_mismatch": "TLS certificate mismatch",
+                            "http_on_ip": "HTTP service on direct IP",
+                        }
+
+                        # Create Vulnerability node (source='security_check')
+                        vuln_props = {
+                            "id": vuln_id,
+                            "user_id": user_id,
+                            "project_id": project_id,
+                            "source": "security_check",
+                            "type": check_type,
+                            "severity": severity,
+                            "name": check_names.get(check_type, f"Security check: {check_type}"),
+                            "description": finding,
+                            "url": url,
+                            "matched_at": url,
+                            "host": target_host,
+                            "matched_ip": ip_address,
+                            "template_id": None,
+                            "is_dast_finding": False,
+                        }
+
+                        if evidence:
+                            vuln_props["evidence"] = evidence
+                        if status_code:
+                            vuln_props["status_code"] = status_code
+                        if content_length:
+                            vuln_props["content_length"] = content_length
+
+                        vuln_props = {k: v for k, v in vuln_props.items() if v is not None}
+
+                        session.run(
+                            """
+                            MERGE (v:Vulnerability {id: $id})
+                            SET v += $props,
+                                v.updated_at = datetime()
+                            """,
+                            id=vuln_id, props=vuln_props
+                        )
+                        security_checks_created += 1
+                        stats["vulnerabilities_created"] += 1
+
+                        # Create relationship: IP -[:HAS_VULNERABILITY]-> Vulnerability
+                        if ip_address:
+                            session.run(
+                                """
+                                MERGE (i:IP {address: $address})
+                                SET i.user_id = $user_id,
+                                    i.project_id = $project_id,
+                                    i.updated_at = datetime()
+                                """,
+                                address=ip_address, user_id=user_id, project_id=project_id
+                            )
+
+                            session.run(
+                                """
+                                MATCH (i:IP {address: $ip_addr})
+                                MATCH (v:Vulnerability {id: $vuln_id})
+                                MERGE (i)-[:HAS_VULNERABILITY]->(v)
+                                """,
+                                ip_addr=ip_address, vuln_id=vuln_id
+                            )
+                            stats["relationships_created"] += 1
+
+                        # For WAF bypass: also connect to Subdomain
+                        if check_type == "waf_bypass" and target_host:
+                            session.run(
+                                """
+                                MATCH (s:Subdomain {name: $subdomain})
+                                MATCH (v:Vulnerability {id: $vuln_id})
+                                MERGE (s)-[:HAS_VULNERABILITY]->(v)
+                                """,
+                                subdomain=target_host, vuln_id=vuln_id
+                            )
+                            stats["relationships_created"] += 1
+
+                            # Subdomain -[:WAF_BYPASS_VIA]-> IP
+                            session.run(
+                                """
+                                MATCH (s:Subdomain {name: $subdomain})
+                                MATCH (i:IP {address: $ip_addr})
+                                MERGE (s)-[:WAF_BYPASS_VIA {
+                                    discovered_at: datetime(),
+                                    evidence: $evidence
+                                }]->(i)
+                                """,
+                                subdomain=target_host, ip_addr=ip_address,
+                                evidence=evidence or ""
+                            )
+                            waf_bypass_rels += 1
+
+                    except Exception as e:
+                        stats["errors"].append(f"Security check {check_type} failed: {e}")
+
+            if security_checks_created > 0:
+                print(f"[+] Created {security_checks_created} security check Vulnerability nodes")
+            if waf_bypass_rels > 0:
+                print(f"[+] Created {waf_bypass_rels} WAF_BYPASS_VIA relationships")
+
             # Update Domain node with vuln_scan metadata
             metadata = recon_data.get("metadata", {})
             root_domain = metadata.get("root_domain", "")
@@ -1595,6 +1730,266 @@ class Neo4jClient:
             print(f"[+] Created {stats['endpoints_created']} Endpoint nodes")
             print(f"[+] Created {stats['parameters_created']} Parameter nodes")
             print(f"[+] Created {stats['vulnerabilities_created']} Vulnerability nodes")
+            print(f"[+] Created {stats['relationships_created']} relationships")
+
+            if stats["errors"]:
+                print(f"[!] {len(stats['errors'])} errors occurred")
+
+        return stats
+
+    def update_graph_from_resource_enum(self, recon_data: dict, user_id: str, project_id: str) -> dict:
+        """
+        Update the Neo4j graph database with resource enumeration data.
+
+        This function creates/updates:
+        - Endpoint nodes (discovered paths with their HTTP methods)
+        - Parameter nodes (query/body parameters)
+        - Form nodes (POST forms discovered)
+        - Relationships: BaseURL -[:HAS_ENDPOINT]-> Endpoint -[:HAS_PARAMETER]-> Parameter
+
+        Args:
+            recon_data: The recon JSON data containing resource_enum results
+            user_id: User identifier for multi-tenant isolation
+            project_id: Project identifier for multi-tenant isolation
+
+        Returns:
+            Dictionary with statistics about created/updated nodes/relationships
+        """
+        stats = {
+            "endpoints_created": 0,
+            "parameters_created": 0,
+            "forms_created": 0,
+            "relationships_created": 0,
+            "errors": []
+        }
+
+        resource_enum_data = recon_data.get("resource_enum", {})
+        if not resource_enum_data:
+            stats["errors"].append("No resource_enum data found in recon_data")
+            return stats
+
+        with self.driver.session() as session:
+            # Ensure schema is initialized
+            self._init_schema(session)
+
+            by_base_url = resource_enum_data.get("by_base_url", {})
+            forms = resource_enum_data.get("forms", [])
+
+            # Track created items to avoid duplicates
+            created_endpoints = set()
+            created_parameters = set()
+
+            # Process endpoints by base URL
+            for base_url, base_data in by_base_url.items():
+                endpoints = base_data.get("endpoints", {})
+
+                for path, endpoint_info in endpoints.items():
+                    try:
+                        methods = endpoint_info.get("methods", ["GET"])
+                        category = endpoint_info.get("category", "other")
+                        param_count = endpoint_info.get("parameter_count", {})
+
+                        for method in methods:
+                            endpoint_key = (base_url, path, method)
+                            if endpoint_key in created_endpoints:
+                                continue
+
+                            # Create Endpoint node
+                            session.run(
+                                """
+                                MERGE (e:Endpoint {path: $path, method: $method, baseurl: $baseurl})
+                                SET e.user_id = $user_id,
+                                    e.project_id = $project_id,
+                                    e.category = $category,
+                                    e.has_parameters = $has_params,
+                                    e.query_param_count = $query_count,
+                                    e.body_param_count = $body_count,
+                                    e.path_param_count = $path_count,
+                                    e.urls_found = $urls_found,
+                                    e.source = 'resource_enum',
+                                    e.updated_at = datetime()
+                                """,
+                                path=path, method=method, baseurl=base_url,
+                                user_id=user_id, project_id=project_id,
+                                category=category,
+                                has_params=param_count.get('total', 0) > 0,
+                                query_count=param_count.get('query', 0),
+                                body_count=param_count.get('body', 0),
+                                path_count=param_count.get('path', 0),
+                                urls_found=endpoint_info.get('urls_found', 1)
+                            )
+                            stats["endpoints_created"] += 1
+                            created_endpoints.add(endpoint_key)
+
+                            # Create relationship: BaseURL -[:HAS_ENDPOINT]-> Endpoint
+                            session.run(
+                                """
+                                MATCH (bu:BaseURL {url: $baseurl})
+                                MATCH (e:Endpoint {path: $path, method: $method, baseurl: $baseurl})
+                                MERGE (bu)-[:HAS_ENDPOINT]->(e)
+                                """,
+                                baseurl=base_url, path=path, method=method
+                            )
+                            stats["relationships_created"] += 1
+
+                        # Create Parameter nodes
+                        parameters = endpoint_info.get("parameters", {})
+
+                        # Process query parameters
+                        for param in parameters.get("query", []):
+                            param_name = param.get("name")
+                            if not param_name:
+                                continue
+
+                            param_key = (base_url, path, param_name, "query")
+                            if param_key in created_parameters:
+                                continue
+
+                            sample_values = param.get("sample_values", [])
+
+                            session.run(
+                                """
+                                MERGE (p:Parameter {name: $name, position: $position, endpoint_path: $endpoint_path, baseurl: $baseurl})
+                                SET p.user_id = $user_id,
+                                    p.project_id = $project_id,
+                                    p.type = $param_type,
+                                    p.category = $category,
+                                    p.sample_values = $sample_values,
+                                    p.is_injectable = false,
+                                    p.source = 'resource_enum',
+                                    p.updated_at = datetime()
+                                """,
+                                name=param_name, position="query", endpoint_path=path, baseurl=base_url,
+                                user_id=user_id, project_id=project_id,
+                                param_type=param.get("type", "string"),
+                                category=param.get("category", "other"),
+                                sample_values=sample_values[:5]  # Limit sample values
+                            )
+                            stats["parameters_created"] += 1
+                            created_parameters.add(param_key)
+
+                            # Create relationship: Endpoint -[:HAS_PARAMETER]-> Parameter
+                            for method in methods:
+                                session.run(
+                                    """
+                                    MATCH (e:Endpoint {path: $path, method: $method, baseurl: $baseurl})
+                                    MATCH (p:Parameter {name: $param_name, position: $position, endpoint_path: $path, baseurl: $baseurl})
+                                    MERGE (e)-[:HAS_PARAMETER]->(p)
+                                    """,
+                                    path=path, method=method, baseurl=base_url,
+                                    param_name=param_name, position="query"
+                                )
+                                stats["relationships_created"] += 1
+
+                        # Process body parameters
+                        for param in parameters.get("body", []):
+                            param_name = param.get("name")
+                            if not param_name:
+                                continue
+
+                            param_key = (base_url, path, param_name, "body")
+                            if param_key in created_parameters:
+                                continue
+
+                            session.run(
+                                """
+                                MERGE (p:Parameter {name: $name, position: $position, endpoint_path: $endpoint_path, baseurl: $baseurl})
+                                SET p.user_id = $user_id,
+                                    p.project_id = $project_id,
+                                    p.type = $param_type,
+                                    p.category = $category,
+                                    p.input_type = $input_type,
+                                    p.required = $required,
+                                    p.is_injectable = false,
+                                    p.source = 'resource_enum',
+                                    p.updated_at = datetime()
+                                """,
+                                name=param_name, position="body", endpoint_path=path, baseurl=base_url,
+                                user_id=user_id, project_id=project_id,
+                                param_type=param.get("type", "string"),
+                                category=param.get("category", "other"),
+                                input_type=param.get("input_type", "text"),
+                                required=param.get("required", False)
+                            )
+                            stats["parameters_created"] += 1
+                            created_parameters.add(param_key)
+
+                            # Create relationship for POST method
+                            session.run(
+                                """
+                                MATCH (e:Endpoint {path: $path, method: 'POST', baseurl: $baseurl})
+                                MATCH (p:Parameter {name: $param_name, position: $position, endpoint_path: $path, baseurl: $baseurl})
+                                MERGE (e)-[:HAS_PARAMETER]->(p)
+                                """,
+                                path=path, baseurl=base_url,
+                                param_name=param_name, position="body"
+                            )
+                            stats["relationships_created"] += 1
+
+                    except Exception as e:
+                        stats["errors"].append(f"Endpoint {path} processing failed: {e}")
+
+            # Process forms
+            for form in forms:
+                try:
+                    action = form.get("action", "")
+                    method = form.get("method", "POST")
+                    found_at = form.get("found_at", "")
+
+                    if not action:
+                        continue
+
+                    # Parse action URL
+                    from urllib.parse import urlparse
+                    parsed = urlparse(action)
+                    path = parsed.path or "/"
+
+                    # Create Form node (as a special type of endpoint marker)
+                    session.run(
+                        """
+                        MATCH (e:Endpoint {path: $path, method: $method, baseurl: $baseurl})
+                        SET e.is_form = true,
+                            e.form_found_at = $found_at,
+                            e.form_enctype = $enctype
+                        """,
+                        path=path, method=method,
+                        baseurl=f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else found_at.rsplit('/', 1)[0],
+                        found_at=found_at,
+                        enctype=form.get("enctype", "application/x-www-form-urlencoded")
+                    )
+                    stats["forms_created"] += 1
+
+                except Exception as e:
+                    stats["errors"].append(f"Form processing failed: {e}")
+
+            # Update Domain node with resource_enum metadata
+            metadata = recon_data.get("metadata", {})
+            root_domain = metadata.get("root_domain", "")
+            summary = resource_enum_data.get("summary", {})
+
+            if root_domain:
+                try:
+                    session.run(
+                        """
+                        MATCH (d:Domain {name: $root_domain, user_id: $user_id, project_id: $project_id})
+                        SET d.resource_enum_timestamp = $scan_timestamp,
+                            d.resource_enum_total_endpoints = $total_endpoints,
+                            d.resource_enum_total_parameters = $total_parameters,
+                            d.resource_enum_total_forms = $total_forms,
+                            d.updated_at = datetime()
+                        """,
+                        root_domain=root_domain, user_id=user_id, project_id=project_id,
+                        scan_timestamp=resource_enum_data.get("scan_metadata", {}).get("scan_timestamp"),
+                        total_endpoints=summary.get("total_endpoints", 0),
+                        total_parameters=summary.get("total_parameters", 0),
+                        total_forms=summary.get("total_forms", 0)
+                    )
+                except Exception as e:
+                    stats["errors"].append(f"Domain update failed: {e}")
+
+            print(f"[+] Created {stats['endpoints_created']} Endpoint nodes")
+            print(f"[+] Created {stats['parameters_created']} Parameter nodes")
+            print(f"[+] Processed {stats['forms_created']} form endpoints")
             print(f"[+] Created {stats['relationships_created']} relationships")
 
             if stats["errors"]:

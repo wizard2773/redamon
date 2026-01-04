@@ -130,6 +130,49 @@ NAABU_CUSTOM_PORTS = "1-65535"    # Full port range
 - `"s"` (SYN) - Faster, more reliable, **requires root/sudo**
 - `"c"` (CONNECT) - No root needed, full TCP handshake
 
+**SYN Scan (Half-Open) - Default:**
+```
+   You                                    Target
+    │                                        │
+    │──────────── 1. SYN ───────────────────►│
+    │                                        │
+    │◄─────────── 2. SYN/ACK ───────────────│  ← Port OPEN
+    │                                        │
+    │──────────── 3. RST (abort) ───────────►│  ← Connection killed
+    │                                        │
+    │         ❌ NO CONNECTION ESTABLISHED    │
+    │         ❌ MINIMAL LOGGING ON TARGET    │
+```
+
+**CONNECT Scan (Full TCP):**
+```
+   You                                    Target
+    │                                        │
+    │──────────── 1. SYN ───────────────────►│
+    │                                        │
+    │◄─────────── 2. SYN/ACK ───────────────│
+    │                                        │
+    │──────────── 3. ACK ───────────────────►│  ← FULL HANDSHAKE
+    │                                        │
+    │         ✅ CONNECTION ESTABLISHED       │
+    │         ✅ LOGGED BY APPLICATION        │
+    │                                        │
+    │──────────── 4. FIN ───────────────────►│
+    │◄─────────── 5. FIN/ACK ───────────────│  ← GRACEFUL CLOSE
+    │──────────── 6. ACK ───────────────────►│
+```
+
+**Comparison:**
+
+| Aspect | SYN (`-s s`) | CONNECT (`-s c`) |
+|--------|--------------|------------------|
+| Packets sent | 2 (SYN, RST) | 6+ (full handshake) |
+| Speed | ⚡ Faster | 🐢 Slower |
+| Stealth | 🥷 Stealthier | 👀 Easily detected |
+| Application logging | ❌ Usually not | ✅ Logged |
+| Requires root | ✅ Yes | ❌ No |
+| Works through proxy | ❌ No | ✅ Yes (SOCKS/Tor) |
+
 ### Performance Settings
 
 | Parameter | Type | Default | Description |
@@ -154,10 +197,182 @@ NAABU_CUSTOM_PORTS = "1-65535"    # Full port range
 |-----------|------|---------|-------------|
 | `NAABU_EXCLUDE_CDN` | `bool` | `True` | Skip non-standard ports on CDN hosts |
 | `NAABU_DISPLAY_CDN` | `bool` | `True` | Show CDN information in output |
-| `NAABU_SERVICE_DETECTION` | `bool` | `True` | Service mapping (uses internal port mapping, naabu -sD not yet implemented) |
 | `NAABU_SKIP_HOST_DISCOVERY` | `bool` | `True` | Assume all hosts are up |
 | `NAABU_VERIFY_PORTS` | `bool` | `True` | Extra TCP check to verify ports |
 | `NAABU_PASSIVE_MODE` | `bool` | `False` | Use Shodan InternetDB (no active scan) |
+
+---
+
+#### `NAABU_EXCLUDE_CDN` - CDN Port Filtering
+
+**Problem:** CDN providers (Cloudflare, Akamai, AWS CloudFront) expose thousands of ports on their edge servers that belong to the CDN infrastructure, not the actual target.
+
+```
+Without CDN Exclusion:
+┌─────────────────────────────────────────────────────────────────┐
+│  Target: example.com (behind Cloudflare)                        │
+│                                                                 │
+│  Scan Result: Ports 22, 80, 443, 2052, 2053, 2082, 2083,       │
+│               2086, 2087, 2095, 2096, 8080, 8443...            │
+│                                                                 │
+│  Reality: Only 80/443 are YOUR server                          │
+│           All others are Cloudflare's infrastructure ❌         │
+└─────────────────────────────────────────────────────────────────┘
+
+With CDN Exclusion (NAABU_EXCLUDE_CDN = True):
+┌─────────────────────────────────────────────────────────────────┐
+│  Target: example.com (behind Cloudflare)                        │
+│                                                                 │
+│  Scan Result: Ports 80, 443                                    │
+│  CDN Detected: cloudflare ✅                                    │
+│                                                                 │
+│  Clean results - only ports that reach YOUR origin server      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+| Setting | Behavior |
+|---------|----------|
+| `True` (default) | Only scan 80/443 on CDN hosts, skip other ports |
+| `False` | Scan all ports (includes CDN infrastructure noise) |
+
+---
+
+#### `NAABU_DISPLAY_CDN` - CDN Detection Display
+
+Shows which CDN provider protects each host in the output.
+
+```json
+{
+  "host": "cdn.example.com",
+  "ip": "104.16.123.96",
+  "ports": [80, 443],
+  "cdn": "cloudflare",    // ← This field
+  "is_cdn": true          // ← And this field
+}
+```
+
+**Detected CDN Providers:**
+- Cloudflare, Akamai, Fastly, AWS CloudFront
+- Google Cloud CDN, Azure CDN, Incapsula
+- MaxCDN, KeyCDN, StackPath, and more
+
+---
+
+#### `NAABU_SKIP_HOST_DISCOVERY` - Skip Ping Check (`-Pn`)
+
+**Host Discovery** = Check if host is alive before scanning ports.
+
+```
+WITH Host Discovery (NAABU_SKIP_HOST_DISCOVERY = False):
+┌─────────────────────────────────────────────────────────────────┐
+│   You                                        Target             │
+│    │                                            │               │
+│    │   PHASE 1: Is host alive?                  │               │
+│    │                                            │               │
+│    │──────────── ICMP Ping ────────────────────►│               │
+│    │◄─────────── Pong (or timeout) ────────────│               │
+│    │                                            │               │
+│    │   If NO response → Host "DOWN" → SKIP ❌   │               │
+│    │   If response → Continue to port scan      │               │
+│    │                                            │               │
+│    │   PHASE 2: Port scan (only if UP)          │               │
+│    │──────────── SYN port 80 ──────────────────►│               │
+└─────────────────────────────────────────────────────────────────┘
+
+WITHOUT Host Discovery (NAABU_SKIP_HOST_DISCOVERY = True):
+┌─────────────────────────────────────────────────────────────────┐
+│   You                                        Target             │
+│    │                                            │               │
+│    │   SKIP Phase 1 - Assume host is UP         │               │
+│    │                                            │               │
+│    │   Go directly to port scanning             │               │
+│    │──────────── SYN port 80 ──────────────────►│               │
+│    │──────────── SYN port 443 ─────────────────►│               │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+| Setting | Behavior | Use When |
+|---------|----------|----------|
+| `True` (default) | Skip ping, assume all hosts UP | Firewalls block ICMP, hosts from DNS |
+| `False` | Ping first, skip "dead" hosts | Large IP ranges, internal networks |
+
+**Why default is `True`:** RedAmon already confirmed hosts exist via DNS resolution. Many firewalls block ICMP ping, causing false negatives.
+
+---
+
+#### `NAABU_VERIFY_PORTS` - Double-Check Open Ports
+
+After finding an open port via SYN scan, perform an additional TCP connection to verify.
+
+```
+Without Verification:
+┌─────────────────────────────────────────────────────────────────┐
+│   SYN scan says port 8080 is OPEN                              │
+│   → Report as open (might be false positive)                   │
+└─────────────────────────────────────────────────────────────────┘
+
+With Verification (NAABU_VERIFY_PORTS = True):
+┌─────────────────────────────────────────────────────────────────┐
+│   SYN scan says port 8080 is OPEN                              │
+│   → Try full TCP connection to verify                          │
+│   → Connection successful? Report as open ✅                    │
+│   → Connection failed? Discard (was false positive) ❌          │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+| Setting | Behavior | Trade-off |
+|---------|----------|-----------|
+| `True` (default) | Verify each open port with TCP connect | More accurate, slightly slower |
+| `False` | Trust SYN scan results directly | Faster, may have false positives |
+
+**Reduces false positives from:**
+- Stateful firewalls that RST after SYN/ACK
+- Load balancers with connection limits
+- Rate-limiting that causes inconsistent responses
+
+---
+
+#### `NAABU_PASSIVE_MODE` - Shodan InternetDB (No Active Scan)
+
+Instead of actively scanning the target, query **Shodan's InternetDB** for known open ports.
+
+```
+Active Scanning (NAABU_PASSIVE_MODE = False):
+┌─────────────────────────────────────────────────────────────────┐
+│   You ──────── SYN packets ──────────────────► Target           │
+│                                                                 │
+│   • Sends packets to target                                    │
+│   • Target sees your IP                                        │
+│   • May trigger IDS/IPS alerts                                 │
+│   • Real-time results                                          │
+└─────────────────────────────────────────────────────────────────┘
+
+Passive Mode (NAABU_PASSIVE_MODE = True):
+┌─────────────────────────────────────────────────────────────────┐
+│   You ──────── API query ──────────────────► Shodan InternetDB  │
+│                                                                 │
+│   • NO packets to target                                       │
+│   • Target never sees you                                      │
+│   • 100% stealth                                               │
+│   • Data may be days/weeks old                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+| Setting | Behavior | Trade-off |
+|---------|----------|-----------|
+| `False` (default) | Active SYN scan | Real-time, target aware |
+| `True` | Query Shodan database | Stealth, but potentially stale data |
+
+**Use Passive Mode when:**
+- Initial reconnaissance (don't want to touch target yet)
+- Target has strict IDS/IPS
+- Legal constraints on active scanning
+- Quick overview before active scan
+
+**Limitations:**
+- Data freshness depends on Shodan's last scan
+- May miss recently opened ports
+- May show ports that are now closed
 
 ### CDN Handling
 
@@ -245,7 +460,6 @@ docker run --rm \
       "passive_mode": false,
       "proxy_used": false,
       "total_targets": 15,
-      "service_detection": true,
       "cdn_exclusion": true
     },
     
@@ -381,7 +595,6 @@ NAABU_TOP_PORTS = "1000"
 NAABU_RATE_LIMIT = 1000
 NAABU_THREADS = 25
 NAABU_VERIFY_PORTS = True
-NAABU_SERVICE_DETECTION = True
 ```
 
 **Stealth Scan:**

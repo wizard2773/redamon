@@ -64,6 +64,7 @@ from params import (
     KATANA_PARAMS_ONLY,
     KATANA_SCOPE,
     KATANA_CUSTOM_HEADERS,
+    KATANA_EXCLUDE_PATTERNS,
     # Template auto-update
     NUCLEI_AUTO_UPDATE_TEMPLATES,
     # CVE Lookup settings
@@ -72,7 +73,49 @@ from params import (
     CVE_LOOKUP_MAX_CVES,
     CVE_LOOKUP_MIN_CVSS,
     VULNERS_API_KEY,
+    # Security check settings (only non-redundant checks - others covered by Nuclei)
+    SECURITY_CHECK_DIRECT_IP_HTTP,
+    SECURITY_CHECK_DIRECT_IP_HTTPS,
+    SECURITY_CHECK_IP_API_EXPOSED,
+    SECURITY_CHECK_WAF_BYPASS,
+    SECURITY_CHECK_ENABLED,  # Global switch to skip all security checks
+    SECURITY_CHECK_TLS_EXPIRING_SOON,
+    SECURITY_CHECK_TLS_EXPIRY_DAYS,
+    # Security headers checks (only headers not covered by Nuclei)
+    SECURITY_CHECK_MISSING_REFERRER_POLICY,
+    SECURITY_CHECK_MISSING_PERMISSIONS_POLICY,
+    SECURITY_CHECK_MISSING_COOP,
+    SECURITY_CHECK_MISSING_CORP,
+    SECURITY_CHECK_MISSING_COEP,
+    SECURITY_CHECK_CACHE_CONTROL_MISSING,
+    # Authentication security checks
+    SECURITY_CHECK_LOGIN_NO_HTTPS,
+    SECURITY_CHECK_SESSION_NO_SECURE,
+    SECURITY_CHECK_SESSION_NO_HTTPONLY,
+    SECURITY_CHECK_BASIC_AUTH_NO_TLS,
+    # DNS security checks
+    SECURITY_CHECK_SPF_MISSING,
+    SECURITY_CHECK_DMARC_MISSING,
+    SECURITY_CHECK_DNSSEC_MISSING,
+    SECURITY_CHECK_ZONE_TRANSFER,
+    # Port/Service security checks
+    SECURITY_CHECK_ADMIN_PORT_EXPOSED,
+    SECURITY_CHECK_DATABASE_EXPOSED,
+    SECURITY_CHECK_REDIS_NO_AUTH,
+    SECURITY_CHECK_KUBERNETES_API_EXPOSED,
+    SECURITY_CHECK_SMTP_OPEN_RELAY,
+    # Application security checks
+    SECURITY_CHECK_CSP_UNSAFE_INLINE,
+    SECURITY_CHECK_INSECURE_FORM_ACTION,
+    # Rate limiting checks
+    SECURITY_CHECK_NO_RATE_LIMITING,
+    # Performance settings
+    SECURITY_CHECK_TIMEOUT,
+    SECURITY_CHECK_MAX_WORKERS,
 )
+
+# Import security check helpers
+from recon.helpers.vuln_scan_helpers import run_security_checks
 
 
 # =============================================================================
@@ -311,13 +354,18 @@ def run_katana_crawler(target_urls: List[str], use_proxy: bool = False) -> List[
                 for line in result.stdout.strip().split('\n'):
                     url = line.strip()
                     if url:
+                        # Skip URLs matching exclude patterns (static assets, images, etc.)
+                        url_lower = url.lower()
+                        if any(pattern.lower() in url_lower for pattern in KATANA_EXCLUDE_PATTERNS):
+                            continue
+
                         # Filter for URLs with parameters if enabled
                         if KATANA_PARAMS_ONLY:
                             if '?' in url and '=' in url:
                                 discovered_urls.add(url)
                         else:
                             discovered_urls.add(url)
-                        
+
                         # Stop if we've reached max URLs
                         if len(discovered_urls) >= KATANA_MAX_URLS:
                             break
@@ -447,103 +495,97 @@ def build_target_urls_from_httpx(httpx_data: Optional[dict]) -> List[str]:
     return sorted(list(set(urls)))
 
 
-def build_target_urls_from_naabu(naabu_data: Optional[dict], hostnames: Set[str]) -> List[str]:
+def build_target_urls_from_resource_enum(resource_enum_data: Optional[dict]) -> Tuple[List[str], List[str]]:
     """
-    Build list of target URLs from naabu port scan results.
-    Falls back to default ports if naabu data is not available.
-    
+    Build list of target URLs from resource_enum data.
+
     Args:
-        naabu_data: naabu scan results containing open ports
-        hostnames: Set of hostnames to scan
-        
+        resource_enum_data: Resource enumeration data with endpoints
+
     Returns:
-        List of URLs to scan
+        Tuple of (base_urls, endpoint_urls_with_params)
     """
-    urls = []
-    
-    # Common HTTPS ports
-    https_ports = {443, 8443, 4443, 9443}
-    # Common HTTP ports
-    http_ports = {80, 8080, 8000, 8888, 3000, 5000, 9000}
-    
-    if naabu_data:
-        # Build URLs from naabu port discovery
-        by_host = naabu_data.get("by_host", {})
-        for host, data in by_host.items():
-            for port_info in data.get("port_details", []):
-                port = port_info.get("port")
-                service = port_info.get("service", "").lower()
-                
-                if not port:
-                    continue
-                
-                # Determine protocol based on port and service
-                if port == 443 or "https" in service or "ssl" in service or "tls" in service:
-                    url = f"https://{host}" if port == 443 else f"https://{host}:{port}"
-                    urls.append(url)
-                elif port == 80 or "http" in service:
-                    url = f"http://{host}" if port == 80 else f"http://{host}:{port}"
-                    urls.append(url)
-                elif port in https_ports:
-                    urls.append(f"https://{host}:{port}")
-                elif port in http_ports:
-                    urls.append(f"http://{host}:{port}")
-                else:
-                    # Unknown port - try both protocols
-                    urls.append(f"http://{host}:{port}")
-                    urls.append(f"https://{host}:{port}")
-    else:
-        # Fallback: generate default URLs for all hostnames
-        for hostname in sorted(hostnames):
-            urls.append(f"http://{hostname}")
-            urls.append(f"https://{hostname}")
-    
-    return sorted(list(set(urls)))
+    base_urls = []
+    endpoint_urls = []
+
+    if not resource_enum_data:
+        return base_urls, endpoint_urls
+
+    by_base_url = resource_enum_data.get("by_base_url", {})
+
+    for base_url, base_data in by_base_url.items():
+        base_urls.append(base_url)
+
+        endpoints = base_data.get("endpoints", {})
+        for path, endpoint_info in endpoints.items():
+            # Build URLs with sample parameter values for GET endpoints
+            parameters = endpoint_info.get("parameters", {})
+            query_params = parameters.get("query", [])
+
+            if query_params:
+                # Build URL with parameters
+                param_parts = []
+                for param in query_params:
+                    name = param.get("name")
+                    sample_values = param.get("sample_values", [])
+                    value = sample_values[0] if sample_values else "1"
+                    param_parts.append(f"{name}={value}")
+
+                if param_parts:
+                    full_url = f"{base_url}{path}?{'&'.join(param_parts)}"
+                    endpoint_urls.append(full_url)
+            else:
+                # Add path without params
+                endpoint_urls.append(f"{base_url}{path}")
+
+    return base_urls, endpoint_urls
 
 
 def build_target_urls(hostnames: Set[str], ips: Set[str], recon_data: Optional[dict] = None) -> List[str]:
     """
     Build list of target URLs for nuclei scanning.
-    Prefers httpx data (live URLs), falls back to naabu (ports), then DNS data.
-    
+    Prefers resource_enum endpoints, then httpx data (live URLs), falls back to default URLs.
+
     Args:
         hostnames: Set of hostnames to scan
         ips: Set of IPs to scan (if NUCLEI_SCAN_ALL_IPS is True)
-        recon_data: Full recon data containing httpx/naabu results
-        
+        recon_data: Full recon data containing httpx/resource_enum results
+
     Returns:
         List of URLs to scan
     """
     urls = []
-    
-    # Priority 1: Use live URLs from httpx (most accurate)
+
+    # Priority 1: Use resource_enum endpoints if available (most comprehensive)
+    resource_enum_data = recon_data.get("resource_enum") if recon_data else None
+    if resource_enum_data:
+        base_urls, endpoint_urls = build_target_urls_from_resource_enum(resource_enum_data)
+        if base_urls:
+            # Combine base URLs with endpoint URLs for comprehensive coverage
+            urls = list(set(base_urls + endpoint_urls))
+            print(f"    [*] Using {len(base_urls)} base URLs + {len(endpoint_urls)} endpoint URLs from resource_enum")
+            return sorted(urls)
+
+    # Priority 2: Use live URLs from httpx (fallback if resource_enum not run)
     httpx_data = recon_data.get("http_probe") if recon_data else None
     if httpx_data:
         urls = build_target_urls_from_httpx(httpx_data)
         if urls:
             print(f"    [*] Using {len(urls)} live URLs from httpx probe")
             return urls
-    
-    # Priority 2: Use naabu port data
-    naabu_data = recon_data.get("port_scan") if recon_data else None
-    if naabu_data:
-        urls = build_target_urls_from_naabu(naabu_data, hostnames)
-        if urls:
-            print(f"    [*] Using {len(urls)} URLs from naabu port scan")
-            return urls
-    
+
     # Priority 3: Fallback to default ports for all hostnames
     for hostname in sorted(hostnames):
         urls.append(f"http://{hostname}")
         urls.append(f"https://{hostname}")
-    
+
     # Optionally add IPs
     if NUCLEI_SCAN_ALL_IPS:
         for ip in sorted(ips):
             urls.append(f"http://{ip}")
             urls.append(f"https://{ip}")
-    
-    print(f"    [*] Using {len(urls)} default URLs (no httpx/naabu data)")
+
+    print(f"    [*] Using {len(urls)} default URLs (no httpx data)")
     return sorted(list(set(urls)))
 
 
@@ -1208,20 +1250,30 @@ def run_vuln_scan(recon_data: dict, output_file: Path = None) -> dict:
     target_urls = build_target_urls(hostnames, ips, recon_data)
     
     # For DAST mode, we need URLs with parameters
-    # Run Katana crawler to discover them
+    # First check if resource_enum already discovered them (avoid running Katana twice)
     dast_urls = []
     if NUCLEI_DAST_MODE:
         print(f"  DAST Mode: ENABLED (active fuzzing for XSS, SQLi, etc.)")
-        print(f"  [*] DAST requires URLs with parameters - running Katana crawler...")
-        
-        # Pull Katana image
-        pull_katana_docker_image()
-        
-        # Use live URLs from httpx (already verified to be responding)
-        # instead of constructing new URLs from hostnames
-        # This avoids timeouts on non-responding protocols (e.g., http when only https works)
-        dast_urls = run_katana_crawler(target_urls, use_proxy)
-        
+
+        # Check if resource_enum already discovered URLs with parameters
+        resource_enum_data = recon_data.get("resource_enum")
+        if resource_enum_data:
+            discovered_urls = resource_enum_data.get("discovered_urls", [])
+            # Filter for URLs with parameters
+            dast_urls = [url for url in discovered_urls if '?' in url and '=' in url]
+            if dast_urls:
+                print(f"  [*] Using {len(dast_urls)} URLs with parameters from resource_enum")
+
+        # Fallback: run Katana if no URLs found from resource_enum
+        if not dast_urls:
+            print(f"  [*] No params in resource_enum - running Katana crawler...")
+
+            # Pull Katana image
+            pull_katana_docker_image()
+
+            # Use live URLs from httpx (already verified to be responding)
+            dast_urls = run_katana_crawler(target_urls, use_proxy)
+
         if not dast_urls:
             print(f"  [!] No URLs with parameters found - DAST scan may not find vulnerabilities")
             print(f"  [!] Will run standard scan instead")
@@ -1515,13 +1567,78 @@ def run_vuln_scan(recon_data: dict, output_file: Path = None) -> dict:
         if CVE_LOOKUP_ENABLED and recon_data.get("http_probe"):
             cve_results = run_cve_lookup(recon_data)
             recon_data.update(cve_results)
-            
+
             # Save with CVE data
             if output_file:
                 with open(output_file, 'w') as f:
                     json.dump(recon_data, f, indent=2)
                 fix_file_ownership(output_file)
-        
+
+        # Run custom security checks (Direct IP Access, TLS/SSL, Security Headers)
+        # Skip entirely if global switch is disabled
+        if not SECURITY_CHECK_ENABLED:
+            print(f"\n[*] Custom security checks disabled (SECURITY_CHECK_ENABLED=False)")
+        else:
+            security_checks_enabled = {
+                # Direct IP Access checks (unique - not covered by Nuclei)
+                "direct_ip_http": SECURITY_CHECK_DIRECT_IP_HTTP,
+                "direct_ip_https": SECURITY_CHECK_DIRECT_IP_HTTPS,
+                "ip_api_exposed": SECURITY_CHECK_IP_API_EXPOSED,
+                "waf_bypass": SECURITY_CHECK_WAF_BYPASS,
+                # TLS/SSL checks (only expiring soon - others covered by Nuclei)
+                "tls_expiring_soon": SECURITY_CHECK_TLS_EXPIRING_SOON,
+                # Security Headers checks (only headers not covered by Nuclei)
+                "missing_referrer_policy": SECURITY_CHECK_MISSING_REFERRER_POLICY,
+                "missing_permissions_policy": SECURITY_CHECK_MISSING_PERMISSIONS_POLICY,
+                "missing_coop": SECURITY_CHECK_MISSING_COOP,
+                "missing_corp": SECURITY_CHECK_MISSING_CORP,
+                "missing_coep": SECURITY_CHECK_MISSING_COEP,
+                "cache_control_missing": SECURITY_CHECK_CACHE_CONTROL_MISSING,
+                # Authentication security checks
+                "login_no_https": SECURITY_CHECK_LOGIN_NO_HTTPS,
+                "session_no_secure": SECURITY_CHECK_SESSION_NO_SECURE,
+                "session_no_httponly": SECURITY_CHECK_SESSION_NO_HTTPONLY,
+                "basic_auth_no_tls": SECURITY_CHECK_BASIC_AUTH_NO_TLS,
+                # DNS security checks
+                "spf_missing": SECURITY_CHECK_SPF_MISSING,
+                "dmarc_missing": SECURITY_CHECK_DMARC_MISSING,
+                "dnssec_missing": SECURITY_CHECK_DNSSEC_MISSING,
+                "zone_transfer": SECURITY_CHECK_ZONE_TRANSFER,
+                # Port/Service security checks
+                "admin_port_exposed": SECURITY_CHECK_ADMIN_PORT_EXPOSED,
+                "database_exposed": SECURITY_CHECK_DATABASE_EXPOSED,
+                "redis_no_auth": SECURITY_CHECK_REDIS_NO_AUTH,
+                "kubernetes_api_exposed": SECURITY_CHECK_KUBERNETES_API_EXPOSED,
+                "smtp_open_relay": SECURITY_CHECK_SMTP_OPEN_RELAY,
+                # Application security checks
+                "csp_unsafe_inline": SECURITY_CHECK_CSP_UNSAFE_INLINE,
+                "insecure_form_action": SECURITY_CHECK_INSECURE_FORM_ACTION,
+                # Rate limiting checks
+                "no_rate_limiting": SECURITY_CHECK_NO_RATE_LIMITING,
+            }
+
+            # Only run if at least one check is enabled
+            if any(security_checks_enabled.values()):
+                security_results = run_security_checks(
+                    recon_data=recon_data,
+                    enabled_checks=security_checks_enabled,
+                    timeout=SECURITY_CHECK_TIMEOUT,
+                    tls_expiry_days=SECURITY_CHECK_TLS_EXPIRY_DAYS,
+                    max_workers=SECURITY_CHECK_MAX_WORKERS
+                )
+
+                # Merge security checks into vuln_scan results
+                if "vuln_scan" in recon_data:
+                    recon_data["vuln_scan"]["security_checks"] = security_results.get("security_checks", {})
+                else:
+                    recon_data["vuln_scan"] = {"security_checks": security_results.get("security_checks", {})}
+
+                # Save with security check data
+                if output_file:
+                    with open(output_file, 'w') as f:
+                        json.dump(recon_data, f, indent=2)
+                    fix_file_ownership(output_file)
+
     finally:
         # Cleanup temporary files and directory
         # Docker may create files as root, so we use Docker to clean up if needed

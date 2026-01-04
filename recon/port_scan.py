@@ -36,7 +36,6 @@ from params import (
     NAABU_SCAN_TYPE,
     NAABU_EXCLUDE_CDN,
     NAABU_DISPLAY_CDN,
-    NAABU_SERVICE_DETECTION,
     NAABU_SKIP_HOST_DISCOVERY,
     NAABU_VERIFY_PORTS,
     NAABU_PASSIVE_MODE,
@@ -228,11 +227,6 @@ def build_naabu_command(targets_file: str, output_file: str, use_proxy: bool = F
 
     if NAABU_DISPLAY_CDN:
         cmd.append("-cdn")
-
-    # Note: -sD (service discovery) exists in naabu help but is NOT YET IMPLEMENTED
-    # We use our own port-to-service mapping in get_service_name() instead
-    # if NAABU_SERVICE_DETECTION:
-    #     cmd.append("-sD")  # Service Discovery - disabled until implemented
 
     if NAABU_SKIP_HOST_DISCOVERY:
         cmd.append("-Pn")
@@ -536,7 +530,6 @@ def run_port_scan(recon_data: dict, output_file: Path = None) -> dict:
                 "passive_mode": NAABU_PASSIVE_MODE,
                 "proxy_used": use_proxy,
                 "total_targets": len(all_targets),
-                "service_detection": NAABU_SERVICE_DETECTION,
                 "cdn_exclusion": NAABU_EXCLUDE_CDN
             },
             "by_host": results["by_host"],

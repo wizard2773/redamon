@@ -172,11 +172,85 @@ See [GRAPH.SCHEMA.md](../readmes/GRAPH.SCHEMA.md) for the complete schema docume
 
 ```
 (Domain) <-[:BELONGS_TO]- (Subdomain) -[:RESOLVES_TO]-> (IP)
-                               |
-                        [:HAS_DNS_RECORD]
-                               |
-                               v
-                         (DNSRecord)
+                               |                          |
+                        [:HAS_DNS_RECORD]          [:HAS_VULNERABILITY]
+                               |                          |
+                               v                          v
+                         (DNSRecord)              (Vulnerability)
+```
+
+### Vulnerability Node
+
+The `:Vulnerability` node stores all security findings from multiple sources:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `id` | string | Unique identifier |
+| `source` | string | `"nuclei"`, `"security_check"`, `"sqlmap"`, etc. |
+| `type` | string | Vulnerability type (e.g., `"xss"`, `"direct_ip_http"`, `"waf_bypass"`) |
+| `severity` | string | `"info"`, `"low"`, `"medium"`, `"high"`, `"critical"` |
+| `name` | string | Human-readable title |
+| `description` | string | Detailed finding description |
+| `url` | string | Affected URL |
+| `matched_at` | string | Exact match location |
+| `matched_ip` | string | IP address (for IP-based findings) |
+| `template_id` | string | Nuclei template ID (null for security checks) |
+| `evidence` | string | Proof/extracted data |
+| `is_dast_finding` | boolean | True if from DAST fuzzing |
+
+**Vulnerability Sources:**
+
+| Source | Description | Connected To |
+|--------|-------------|--------------|
+| `nuclei` | Nuclei scanner findings | `:BaseURL`, `:Endpoint`, `:Parameter` |
+| `security_check` | Custom security checks | `:IP`, `:Subdomain` |
+
+**Security Check Types:**
+
+| Type | Severity | Description |
+|------|----------|-------------|
+| `direct_ip_http` | medium | HTTP accessible directly via IP without TLS |
+| `direct_ip_https` | low | HTTPS accessible directly via IP |
+| `ip_api_exposed` | high | API endpoint exposed on IP without TLS |
+| `waf_bypass` | high | WAF bypass via direct IP access |
+| `tls_mismatch` | medium | TLS certificate mismatch |
+
+**Relationships:**
+
+```cypher
+-- Nuclei findings (from vuln_scan)
+(:BaseURL)-[:HAS_VULNERABILITY]->(:Vulnerability)
+(:Vulnerability)-[:FOUND_AT]->(:Endpoint)
+(:Vulnerability)-[:AFFECTS_PARAMETER]->(:Parameter)
+
+-- Security check findings (direct IP access)
+(:IP)-[:HAS_VULNERABILITY]->(:Vulnerability)
+
+-- WAF bypass findings
+(:Subdomain)-[:HAS_VULNERABILITY]->(:Vulnerability)
+(:Subdomain)-[:WAF_BYPASS_VIA]->(:IP)
+```
+
+### Query Examples
+
+```cypher
+-- Find all security check vulnerabilities
+MATCH (v:Vulnerability {source: "security_check"})
+RETURN v.type, v.severity, v.name, v.url
+
+-- Find WAF bypass opportunities
+MATCH (s:Subdomain)-[:WAF_BYPASS_VIA]->(i:IP)
+RETURN s.name AS subdomain, i.address AS bypass_ip
+
+-- Find all vulnerabilities for an IP
+MATCH (i:IP {address: "44.228.249.3"})-[:HAS_VULNERABILITY]->(v:Vulnerability)
+RETURN v.type, v.severity, v.description
+
+-- Find high/critical vulnerabilities by source
+MATCH (v:Vulnerability)
+WHERE v.severity IN ["high", "critical"]
+RETURN v.source, v.type, v.name, v.url
+ORDER BY v.severity DESC
 ```
 
 ## Troubleshooting

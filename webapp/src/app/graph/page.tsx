@@ -41,8 +41,8 @@ const NODE_COLORS: Record<string, string> = {
   Subdomain: '#8b5cf6',
   IP: '#22c55e',
   Host: '#f59e0b',
-  Port: '#ef4444',
-  Service: '#06b6d4',
+  Port: '#38bdf8',  // Sky blue
+  Service: '#0891b2',  // Darker cyan/teal
   Vulnerability: '#dc2626',
   Technology: '#84cc16',
   CVE: '#e11d48',        // Rose/Red - Known CVEs from technology lookup
@@ -54,7 +54,7 @@ const NODE_COLORS: Record<string, string> = {
   CIDR: '#a855f7',
   URL: '#6366f1',
   BaseURL: '#6366f1',    // Same as URL
-  Endpoint: '#818cf8',   // Lighter indigo for endpoints
+  Endpoint: '#4b5563',   // Semi-transparent dark grey
   Parameter: '#c084fc',  // Purple for parameters
   Header: '#f472b6',
   Project: '#fbbf24',
@@ -67,6 +67,7 @@ const NODE_SIZES: Record<string, number> = {
   Subdomain: 3,
   IP: 2,
   Port: 2,
+  Service: 2,
   BaseURL: 3,
   Technology: 2,
   Default: 1,

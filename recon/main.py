@@ -7,10 +7,11 @@ Orchestrates all OSINT reconnaissance modules:
 2. Subdomain discovery & DNS resolution
 3. Port scanning (fast, lightweight)
 4. HTTP probing & technology detection
-5. Vulnerability scanning + MITRE CWE/CAPEC enrichment
-6. GitHub secret hunting (separate JSON output)
+5. Resource enumeration (endpoint discovery & classification)
+6. Vulnerability scanning + MITRE CWE/CAPEC enrichment
+7. GitHub secret hunting (separate JSON output)
 
-Pipeline: domain_discovery -> port_scan -> http_probe -> vuln_scan -> github
+Pipeline: domain_discovery -> port_scan -> http_probe -> resource_enum -> vuln_scan -> github
 
 Note: vuln_scan automatically includes MITRE CWE/CAPEC enrichment for all CVEs.
 
@@ -46,6 +47,7 @@ from recon.domain_recon import discover_subdomains
 from recon.github_secret_hunt import GitHubSecretHunter
 from recon.port_scan import run_port_scan
 from recon.http_probe import run_http_probe
+from recon.resource_enum import run_resource_enum
 from recon.vuln_scan import run_vuln_scan
 from recon.add_mitre import run_mitre_enrichment
 
@@ -104,6 +106,8 @@ def build_scan_type() -> str:
         modules.append("port_scan")
     if "http_probe" in SCAN_MODULES:
         modules.append("http_probe")
+    if "resource_enum" in SCAN_MODULES:
+        modules.append("resource_enum")
     if "vuln_scan" in SCAN_MODULES:
         modules.append("vuln_scan")
     if "github" in SCAN_MODULES:
@@ -342,7 +346,38 @@ def run_domain_recon(target: str, anonymous: bool = False, bruteforce: bool = Fa
 
             save_recon_file(combined_result, output_file)
 
-    # Step 5: Vulnerability scanning (web application vulns) + MITRE enrichment
+    # Step 5: Resource enumeration (endpoint discovery & classification)
+    if "resource_enum" in SCAN_MODULES:
+        combined_result = run_resource_enum(combined_result, output_file=output_file)
+        combined_result["metadata"]["modules_executed"].append("resource_enum")
+        save_recon_file(combined_result, output_file)
+
+        # Update Graph DB with resource enumeration data
+        if UPDATE_GRAPH_DB:
+            print(f"\n[GRAPH UPDATE] Resource Enumeration Data")
+            print("-" * 40)
+            try:
+                from graph_db import Neo4jClient
+                with Neo4jClient() as graph_client:
+                    if graph_client.verify_connection():
+                        resource_stats = graph_client.update_graph_from_resource_enum(combined_result, USER_ID, PROJECT_ID)
+                        combined_result["metadata"]["graph_db_resource_enum_updated"] = True
+                        combined_result["metadata"]["graph_db_resource_enum_stats"] = resource_stats
+                        print(f"[+] Graph database updated with resource enumeration data")
+                    else:
+                        print(f"[!] Could not connect to Neo4j - skipping resource enum graph update")
+                        combined_result["metadata"]["graph_db_resource_enum_updated"] = False
+            except ImportError:
+                print(f"[!] Neo4j client not available - skipping resource enum graph update")
+                combined_result["metadata"]["graph_db_resource_enum_updated"] = False
+            except Exception as e:
+                print(f"[!] Resource enum graph update failed: {e}")
+                combined_result["metadata"]["graph_db_resource_enum_updated"] = False
+                combined_result["metadata"]["graph_db_resource_enum_error"] = str(e)
+
+            save_recon_file(combined_result, output_file)
+
+    # Step 6: Vulnerability scanning (web application vulns) + MITRE enrichment
     if "vuln_scan" in SCAN_MODULES:
         combined_result = run_vuln_scan(combined_result, output_file=output_file)
         combined_result["metadata"]["modules_executed"].append("vuln_scan")
@@ -395,7 +430,14 @@ def run_domain_recon(target: str, anonymous: bool = False, bruteforce: bool = Fa
         http_summary = combined_result["http_probe"].get("summary", {})
         print(f"[+] Live URLs: {http_summary.get('live_urls', 0)}")
         print(f"[+] Technologies: {http_summary.get('technology_count', 0)}")
-    
+
+    # Resource enumeration stats
+    if "resource_enum" in SCAN_MODULES and "resource_enum" in combined_result:
+        resource_summary = combined_result["resource_enum"].get("summary", {})
+        print(f"[+] Endpoints: {resource_summary.get('total_endpoints', 0)}")
+        print(f"[+] Parameters: {resource_summary.get('total_parameters', 0)}")
+        print(f"[+] Forms (POST): {resource_summary.get('total_forms', 0)}")
+
     # Vuln scan stats (includes MITRE enrichment)
     if "vuln_scan" in SCAN_MODULES and "vuln_scan" in combined_result:
         vuln_summary = combined_result["vuln_scan"].get("summary", {})
@@ -445,7 +487,7 @@ def main():
     """
     Main entry point - runs the complete recon pipeline.
 
-    Pipeline: domain_discovery -> port_scan -> http_probe -> vuln_scan -> github
+    Pipeline: domain_discovery -> port_scan -> http_probe -> resource_enum -> vuln_scan -> github
 
     Scan modes based on SUBDOMAIN_LIST:
     - Empty list []: Full subdomain discovery (discover and scan all subdomains)
@@ -572,7 +614,42 @@ def main():
 
                 with open(output_file, 'w') as f:
                     json.dump(domain_result, f, indent=2)
-        
+
+        # Run resource_enum if in SCAN_MODULES (when domain_discovery is skipped)
+        if "resource_enum" in SCAN_MODULES:
+            domain_result = run_resource_enum(domain_result, output_file=output_file)
+            if "metadata" in domain_result and "modules_executed" in domain_result["metadata"]:
+                if "resource_enum" not in domain_result["metadata"]["modules_executed"]:
+                    domain_result["metadata"]["modules_executed"].append("resource_enum")
+            with open(output_file, 'w') as f:
+                json.dump(domain_result, f, indent=2)
+
+            # Update Graph DB with resource enumeration data
+            if UPDATE_GRAPH_DB:
+                print(f"\n[GRAPH UPDATE] Resource Enumeration Data")
+                print("-" * 40)
+                try:
+                    from graph_db import Neo4jClient
+                    with Neo4jClient() as graph_client:
+                        if graph_client.verify_connection():
+                            resource_stats = graph_client.update_graph_from_resource_enum(domain_result, USER_ID, PROJECT_ID)
+                            domain_result["metadata"]["graph_db_resource_enum_updated"] = True
+                            domain_result["metadata"]["graph_db_resource_enum_stats"] = resource_stats
+                            print(f"[+] Graph database updated with resource enumeration data")
+                        else:
+                            print(f"[!] Could not connect to Neo4j - skipping resource enum graph update")
+                            domain_result["metadata"]["graph_db_resource_enum_updated"] = False
+                except ImportError:
+                    print(f"[!] Neo4j client not available - skipping resource enum graph update")
+                    domain_result["metadata"]["graph_db_resource_enum_updated"] = False
+                except Exception as e:
+                    print(f"[!] Resource enum graph update failed: {e}")
+                    domain_result["metadata"]["graph_db_resource_enum_updated"] = False
+                    domain_result["metadata"]["graph_db_resource_enum_error"] = str(e)
+
+                with open(output_file, 'w') as f:
+                    json.dump(domain_result, f, indent=2)
+
         # Run vuln_scan if in SCAN_MODULES (when domain_discovery is skipped)
         # vuln_scan automatically includes MITRE CWE/CAPEC enrichment
         if "vuln_scan" in SCAN_MODULES:
@@ -658,6 +735,17 @@ def main():
     elif "http_probe" not in SCAN_MODULES:
         print(f"║  HTTP probe: SKIPPED" + " " * 47 + "║")
 
+    # Resource enumeration stats
+    if "resource_enum" in SCAN_MODULES and "resource_enum" in domain_result:
+        res_summary = domain_result["resource_enum"].get("summary", {})
+        endpoints = res_summary.get('total_endpoints', 0)
+        params = res_summary.get('total_parameters', 0)
+        forms = res_summary.get('total_forms', 0)
+        res_info = f"{endpoints} endpoints, {params} params, {forms} forms"
+        print(f"║  Resources: {res_info}" + " " * (55 - len(res_info)) + "║")
+    elif "resource_enum" not in SCAN_MODULES:
+        print(f"║  Resources: SKIPPED" + " " * 48 + "║")
+
     # Vuln scan stats (includes MITRE enrichment)
     if "vuln_scan" in SCAN_MODULES and "vuln_scan" in domain_result:
         vuln_summary = domain_result["vuln_scan"].get("summary", {})
@@ -690,6 +778,8 @@ def main():
         suffixes.append("PortScan")
     if "http_probe" in SCAN_MODULES:
         suffixes.append("HTTPProbe")
+    if "resource_enum" in SCAN_MODULES:
+        suffixes.append("Resources")
     if "vuln_scan" in SCAN_MODULES:
         suffixes.append("VulnScan+MITRE")
     all_suffixes = " + " + " + ".join(suffixes) if suffixes else ""

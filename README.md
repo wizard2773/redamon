@@ -135,7 +135,6 @@ USE_BRUTEFORCE_FOR_SUBDOMAINS = False   # Brute force subdomain discovery
 NAABU_TOP_PORTS = "1000"               # Number of top ports to scan
 NAABU_RATE_LIMIT = 1000                # Packets per second
 NAABU_SCAN_TYPE = "s"                  # SYN scan (requires root)
-NAABU_SERVICE_DETECTION = True         # Identify services
 NAABU_EXCLUDE_CDN = True               # Skip CDN-protected ports
 ```
 
@@ -195,8 +194,9 @@ WAPPALYZER_MIN_CONFIDENCE = 50         # Minimum confidence level
 | **Default credentials** | Admin:admin, test accounts |
 | **CWE Weaknesses** | Nested hierarchy from broad to specific weakness type |
 | **CAPEC Attack Patterns** | Detailed attack patterns with severity, execution flow |
+| **Custom Security Checks** | DNS security, auth issues, service exposure, rate limiting |
 
-**Execution:** Runs via Docker (`projectdiscovery/nuclei:latest`) with Katana crawler for DAST. MITRE enrichment runs automatically after vulnerability scanning.
+**Execution:** Runs via Docker (`projectdiscovery/nuclei:latest`) with Katana crawler for DAST. MITRE enrichment runs automatically after vulnerability scanning. Custom security checks run in parallel for issues not covered by Nuclei (SPF/DMARC/DNSSEC, Redis auth, K8s exposure, rate limiting, etc.).
 
 **Key Parameters:**
 ```python
@@ -210,6 +210,12 @@ NUCLEI_AUTO_UPDATE_TEMPLATES = True      # Update 9000+ templates
 MITRE_AUTO_UPDATE_DB = True              # Auto-download CVE2CAPEC database
 MITRE_INCLUDE_CWE = True                 # Include CWE weakness mappings
 MITRE_INCLUDE_CAPEC = True               # Include CAPEC attack patterns
+
+# Custom Security Checks (non-Nuclei)
+SECURITY_CHECK_ENABLED = True            # Enable custom security checks
+SECURITY_CHECK_SPF_MISSING = True        # DNS: SPF record check
+SECURITY_CHECK_REDIS_NO_AUTH = True      # Service: Redis auth check
+SECURITY_CHECK_NO_RATE_LIMITING = True   # App: Rate limiting check
 ```
 
 📖 **Detailed documentation:** [readmes/README.VULN_SCAN.md](readmes/README.VULN_SCAN.md) | [readmes/README.MITRE.md](readmes/README.MITRE.md)

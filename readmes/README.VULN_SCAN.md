@@ -1587,4 +1587,107 @@ NUCLEI_EXCLUDE_TEMPLATES = ["fuzzing"]
 
 ---
 
+## Custom Security Checks
+
+In addition to Nuclei templates, RedAmon includes custom Python-based security checks that detect vulnerabilities **not covered by Nuclei**.
+
+### Why Custom Checks?
+
+| Check Type | Nuclei Coverage | Custom Check Adds |
+|------------|-----------------|-------------------|
+| **Direct IP Access** | No | Detects WAF bypass via IP |
+| **TLS Expiry** | No | Warns before cert expires |
+| **DNS Security** | No | SPF, DMARC, DNSSEC, Zone Transfer |
+| **Rate Limiting** | No | Brute-force protection detection |
+| **Service Exposure** | Partial | Redis no-auth, K8s API, SMTP relay |
+
+### Check Categories
+
+#### Authentication Security
+| Check | Severity | Description |
+|-------|----------|-------------|
+| `login_no_https` | High | Login form served over HTTP |
+| `session_no_secure` | Medium | Session cookie missing Secure flag |
+| `session_no_httponly` | Medium | Session cookie missing HttpOnly flag |
+| `basic_auth_no_tls` | High | Basic Auth over unencrypted HTTP |
+
+#### DNS Security
+| Check | Severity | Description |
+|-------|----------|-------------|
+| `spf_missing` | Medium | No SPF record (email spoofing risk) |
+| `dmarc_missing` | Medium | No DMARC record |
+| `dnssec_missing` | Low | DNSSEC not enabled |
+| `zone_transfer` | High | DNS zone transfer allowed (AXFR) |
+
+#### Port/Service Security
+| Check | Severity | Description |
+|-------|----------|-------------|
+| `admin_port_exposed` | Medium | SSH/RDP/VNC/Telnet publicly accessible |
+| `database_exposed` | High | MySQL/PostgreSQL/MongoDB/Redis exposed |
+| `redis_no_auth` | Critical | Redis responds without authentication |
+| `kubernetes_api_exposed` | Critical/High | K8s API publicly accessible |
+| `smtp_open_relay` | High | SMTP server accepts external relay |
+
+#### Application Security
+| Check | Severity | Description |
+|-------|----------|-------------|
+| `csp_unsafe_inline` | Medium | CSP allows 'unsafe-inline' |
+| `insecure_form_action` | High | HTTPS form posts to HTTP |
+
+#### Rate Limiting
+| Check | Severity | Description |
+|-------|----------|-------------|
+| `no_rate_limiting` | Medium | No rate limit on login endpoints |
+
+### Configuration
+
+All checks are enabled by default. Disable in `params.py`:
+
+```python
+# Global switch
+SECURITY_CHECK_ENABLED = True  # Set False to skip all custom checks
+
+# Individual checks
+SECURITY_CHECK_LOGIN_NO_HTTPS = True
+SECURITY_CHECK_SPF_MISSING = True
+SECURITY_CHECK_REDIS_NO_AUTH = True
+SECURITY_CHECK_NO_RATE_LIMITING = True
+# ... see params.py for full list
+
+# Performance
+SECURITY_CHECK_TIMEOUT = 10   # Request timeout (seconds)
+SECURITY_CHECK_MAX_WORKERS = 10  # Parallel workers
+```
+
+### Output Structure
+
+Custom security check findings are stored in `security_checks`:
+
+```json
+{
+  "security_checks": {
+    "scan_timestamp": "2025-01-04T12:00:00",
+    "findings": [
+      {
+        "type": "redis_no_auth",
+        "severity": "critical",
+        "name": "Redis Without Authentication",
+        "ip": "192.168.1.100",
+        "port": 6379,
+        "evidence": "PING command returned PONG without authentication",
+        "recommendation": "Enable Redis AUTH and use strong passwords."
+      }
+    ],
+    "summary": {
+      "total_findings": 5,
+      "critical": 1,
+      "high": 2,
+      "medium": 2
+    }
+  }
+}
+```
+
+---
+
 *Documentation generated for RedAmon v1.0 - Nuclei Scanner Module with Katana DAST Integration*
