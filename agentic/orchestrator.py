@@ -30,13 +30,17 @@ from state import (
     UserQuestionRequest,
     UserQuestionAnswer,
     QAHistoryEntry,
+    ConversationObjective,
+    ObjectiveOutcome,
     format_todo_list,
     format_execution_trace,
     format_qa_history,
+    format_objective_history,
+    migrate_legacy_objective,
     summarize_trace_for_response,
     utc_now,
 )
-from utils import create_config, get_config_values, get_identifiers, set_checkpointer
+from utils import create_config, get_config_values, get_identifiers, set_checkpointer, is_session_config_complete
 from params import (
     OPENAI_MODEL,
     CREATE_GRAPH_IMAGRE_ON_INIT,
@@ -44,7 +48,8 @@ from params import (
     REQUIRE_APPROVAL_FOR_EXPLOITATION,
     REQUIRE_APPROVAL_FOR_POST_EXPLOITATION,
     TOOL_OUTPUT_MAX_CHARS,
-    POST_EXPL_SESSION,
+    ACTIVATE_POST_EXPL_PHASE,
+    POST_EXPL_PHASE_TYPE,
 )
 from tools import (
     MCPToolsManager,
@@ -246,34 +251,208 @@ class AgentOrchestrator:
             logger.warning(f"Could not save graph image: {e}")
 
     # =========================================================================
+    # HELPER METHODS FOR MULTI-OBJECTIVE SUPPORT
+    # =========================================================================
+
+    def _infer_required_phase(self, objective: str) -> str:
+        """
+        Infer which phase this objective likely needs based on keywords.
+
+        Returns:
+            "informational", "exploitation", or "post_exploitation"
+        """
+        objective_lower = objective.lower()
+
+        # Exploitation keywords
+        exploitation_keywords = ["exploit", "hack", "cve", "metasploit", "pwn", "attack", "vulnerability"]
+        if any(kw in objective_lower for kw in exploitation_keywords):
+            return "exploitation"
+
+        # Post-exploitation keywords
+        post_expl_keywords = ["session", "shell", "dump", "privilege", "lateral", "persist", "extract"]
+        if any(kw in objective_lower for kw in post_expl_keywords):
+            return "post_exploitation"
+
+        # Default to informational (reconnaissance, analysis, reporting)
+        return "informational"
+
+    def _determine_phase_for_new_objective(
+        self,
+        objective: str,
+        current_phase: str,
+        objective_history: list
+    ) -> str:
+        """
+        Determine appropriate phase for new objective.
+
+        Per user preference:
+        - Auto-downgrade to informational (no approval needed)
+        - Require approval for exploitation/post-exploitation upgrades
+
+        Args:
+            objective: The new objective content
+            current_phase: The current phase before this objective
+            objective_history: List of completed objectives
+
+        Returns:
+            The phase to transition to for this objective
+        """
+        # Infer required phase from objective content
+        required_phase = self._infer_required_phase(objective)
+
+        # SAFE AUTO-TRANSITION: Downgrade to informational without approval
+        if required_phase == "informational" and current_phase in ["exploitation", "post_exploitation"]:
+            logger.info(f"Auto-downgrading phase to informational for new objective (no approval needed)")
+            return "informational"
+
+        # Keep current phase if already there (avoid redundant transitions)
+        if required_phase == current_phase:
+            logger.info(f"Staying in {current_phase} phase for new objective")
+            return current_phase
+
+        # For exploitation/post-exploitation: stay in informational and let agent request with approval
+        if required_phase in ["exploitation", "post_exploitation"]:
+            logger.info(f"New objective needs {required_phase}, starting in informational (agent will request transition)")
+            return "informational"
+
+        # Default to informational (safest)
+        return "informational"
+
+    # =========================================================================
     # LANGGRAPH NODES
     # =========================================================================
 
     async def _initialize_node(self, state: AgentState, config = None) -> dict:
-        """Initialize state for new conversation or update for continuation."""
+        """
+        Initialize state for new conversation or update for continuation.
+
+        Handles multi-objective support: detects when a new objective should be added
+        based on task completion and new user messages.
+        """
         user_id, project_id, session_id = get_config_values(config)
 
         logger.info(f"[{user_id}/{project_id}/{session_id}] Initializing state...")
 
-        # If resuming after approval, preserve approval state for routing
+        # Migrate legacy state if needed (backward compatibility)
+        state = migrate_legacy_objective(state)
+
+        # If resuming after approval/answer, preserve state for routing
         if state.get("user_approval_response") and state.get("phase_transition_pending"):
             logger.info(f"[{user_id}/{project_id}/{session_id}] Resuming with approval response: {state.get('user_approval_response')}")
-            # Don't modify approval-related fields - let process_approval handle them
             return {
                 "user_id": user_id,
                 "project_id": project_id,
                 "session_id": session_id,
             }
 
-        # Extract objective from latest user message
+        if state.get("user_question_answer") and state.get("pending_question"):
+            logger.info(f"[{user_id}/{project_id}/{session_id}] Resuming with question answer")
+            return {
+                "user_id": user_id,
+                "project_id": project_id,
+                "session_id": session_id,
+            }
+
+        # Extract latest user message
         messages = state.get("messages", [])
-        objective = ""
+        latest_message = ""
         for msg in reversed(messages):
             if isinstance(msg, HumanMessage):
-                objective = msg.content
+                latest_message = msg.content
                 break
 
-        # Initialize or preserve state fields
+        # Get current objective list
+        objectives = state.get("conversation_objectives", [])
+        current_idx = state.get("current_objective_index", 0)
+
+        # Check if this is a NEW message (not approval/answer)
+        is_new_message = not (
+            state.get("user_approval_response") or
+            state.get("user_question_answer")
+        )
+
+        # If new message AND previous objective was completed, add as new objective
+        if is_new_message and latest_message:
+            task_was_complete = state.get("task_complete", False)
+
+            # Also detect new objective by comparing message content with current objective
+            # This handles race conditions where task_complete might not be set yet
+            current_objective_content = ""
+            if current_idx < len(objectives):
+                current_objective_content = objectives[current_idx].get("content", "")
+
+            # New objective if: task was completed, OR index out of bounds, OR message differs from current objective
+            is_different_message = latest_message.strip() != current_objective_content.strip()
+
+            logger.debug(f"[{user_id}/{project_id}/{session_id}] New objective check: task_complete={task_was_complete}, "
+                        f"idx={current_idx}, len={len(objectives)}, is_different={is_different_message}")
+
+            if task_was_complete or current_idx >= len(objectives) or is_different_message:
+                logger.info(f"[{user_id}/{project_id}/{session_id}] Detected new objective after task completion")
+
+                # Archive completed objective
+                if task_was_complete and current_idx < len(objectives):
+                    completed_obj = ConversationObjective(**objectives[current_idx])
+                    outcome = ObjectiveOutcome(
+                        objective=completed_obj.model_copy(
+                            update={
+                                "completed_at": utc_now(),
+                                "completion_reason": state.get("completion_reason")
+                            }
+                        ),
+                        execution_steps=[s["step_id"] for s in state.get("execution_trace", [])],
+                        findings=state.get("target_info", {}),
+                        success=True
+                    )
+                    objective_history = state.get("objective_history", []) + [outcome.model_dump()]
+                    logger.info(f"[{user_id}/{project_id}/{session_id}] Archived objective: {completed_obj.content[:10000]}")
+                else:
+                    objective_history = state.get("objective_history", [])
+
+                # Create new objective from latest message
+                new_objective = ConversationObjective(
+                    content=latest_message,
+                    required_phase=self._infer_required_phase(latest_message)
+                ).model_dump()
+
+                objectives = objectives + [new_objective]
+                current_idx = len(objectives) - 1
+
+                logger.info(f"[{user_id}/{project_id}/{session_id}] New objective #{current_idx + 1}: {latest_message[:10000]}")
+
+                # CRITICAL: Reset task_complete for new objective
+                task_complete = False
+
+                # Determine if phase should auto-transition
+                new_phase = self._determine_phase_for_new_objective(
+                    latest_message,
+                    state.get("current_phase"),
+                    objective_history
+                )
+
+                # CRITICAL: Preserve ALL context (user preference)
+                return {
+                    "conversation_objectives": objectives,
+                    "current_objective_index": current_idx,
+                    "objective_history": objective_history,
+                    "task_complete": task_complete,
+                    "current_phase": new_phase,
+                    "completion_reason": None,
+                    # Preserve all context
+                    "execution_trace": state.get("execution_trace", []),
+                    "target_info": state.get("target_info", {}),
+                    "todo_list": state.get("todo_list", []),
+                    "phase_history": state.get("phase_history", []),
+                    "user_id": user_id,
+                    "project_id": project_id,
+                    "session_id": session_id,
+                    "awaiting_user_approval": False,
+                    "phase_transition_pending": None,
+                    "original_objective": state.get("original_objective", latest_message),  # Backward compat
+                }
+
+        # Otherwise, continue with current objective
+        logger.info(f"[{user_id}/{project_id}/{session_id}] Continuing with current objective")
         return {
             "current_iteration": state.get("current_iteration", 0),
             "max_iterations": state.get("max_iterations", MAX_ITERATIONS),
@@ -284,7 +463,10 @@ class AgentOrchestrator:
             ]),
             "execution_trace": state.get("execution_trace", []),
             "todo_list": state.get("todo_list", []),
-            "original_objective": state.get("original_objective") or objective,
+            "conversation_objectives": objectives,
+            "current_objective_index": current_idx,
+            "objective_history": state.get("objective_history", []),
+            "original_objective": state.get("original_objective", latest_message),  # Backward compat
             "target_info": state.get("target_info", TargetInfo().model_dump()),
             "user_id": user_id,
             "project_id": project_id,
@@ -315,18 +497,35 @@ class AgentOrchestrator:
         set_tenant_context(user_id, project_id)
         set_phase_context(phase)
 
+        # Get current objective from conversation objectives
+        objectives = state.get("conversation_objectives", [])
+        current_idx = state.get("current_objective_index", 0)
+
+        if current_idx < len(objectives):
+            current_objective = objectives[current_idx].get("content", "No objective specified")
+        else:
+            # Fallback to original_objective for backward compatibility
+            current_objective = state.get("original_objective", "No objective specified")
+
         # Build the prompt with current state
-        execution_trace_formatted = format_execution_trace(state.get("execution_trace", []))
+        execution_trace_formatted = format_execution_trace(
+            state.get("execution_trace", []),
+            objectives=state.get("conversation_objectives", []),
+            objective_history=state.get("objective_history", []),
+            current_objective_index=state.get("current_objective_index", 0)
+        )
         todo_list_formatted = format_todo_list(state.get("todo_list", []))
         target_info_formatted = json.dumps(state.get("target_info", {}), indent=2)
         qa_history_formatted = format_qa_history(state.get("qa_history", []))
+        objective_history_formatted = format_objective_history(state.get("objective_history", []))
 
         system_prompt = REACT_SYSTEM_PROMPT.format(
             current_phase=phase,
-            available_tools=get_phase_tools(phase, POST_EXPL_SESSION),
+            available_tools=get_phase_tools(phase, ACTIVATE_POST_EXPL_PHASE, POST_EXPL_PHASE_TYPE),
             iteration=iteration,
             max_iterations=state.get("max_iterations", MAX_ITERATIONS),
-            objective=state.get("original_objective", "No objective specified"),
+            objective=current_objective,  # Now uses current objective, not original
+            objective_history_summary=objective_history_formatted,  # Added
             execution_trace=execution_trace_formatted,
             todo_list=todo_list_formatted,
             target_info=target_info_formatted,
@@ -374,8 +573,8 @@ class AgentOrchestrator:
         logger.info(f"\n{'='*60}")
         logger.info(f"THINK NODE - Iteration {iteration} - Phase: {phase}")
         logger.info(f"{'='*60}")
-        logger.info(f"THOUGHT: {decision.thought[:500]}..." if len(decision.thought) > 500 else f"THOUGHT: {decision.thought}")
-        logger.info(f"REASONING: {decision.reasoning[:300]}..." if len(decision.reasoning) > 300 else f"REASONING: {decision.reasoning}")
+        logger.info(f"THOUGHT: {decision.thought}")
+        logger.info(f"REASONING: {decision.reasoning}")
         logger.info(f"ACTION: {decision.action}")
         if decision.tool_name:
             logger.info(f"TOOL: {decision.tool_name}")
@@ -405,8 +604,8 @@ class AgentOrchestrator:
             for i, entry in enumerate(qa_history, 1):
                 q = entry.get("question", {})
                 a = entry.get("answer", {})
-                logger.info(f"  Q{i}: {q.get('question', 'N/A')[:80]}...")
-                logger.info(f"      Answer: {a.get('answer', 'N/A')[:80] if a else '(unanswered)'}...")
+                logger.info(f"  Q{i}: {q.get('question', 'N/A')[:10000]}")
+                logger.info(f"      Answer: {a.get('answer', 'N/A')[:10000] if a else '(unanswered)'}")
         else:
             logger.info(f"Q&A HISTORY: (none)")
 
@@ -452,6 +651,18 @@ class AgentOrchestrator:
             phase_transition = decision.phase_transition
             to_phase = phase_transition.to_phase if phase_transition else "exploitation"
 
+            # Block post-exploitation if ACTIVATE_POST_EXPL_PHASE=False
+            if to_phase == "post_exploitation" and not ACTIVATE_POST_EXPL_PHASE:
+                logger.warning(f"[{user_id}/{project_id}/{session_id}] Blocking post_exploitation transition: ACTIVATE_POST_EXPL_PHASE=False")
+                updates["task_complete"] = True
+                updates["completion_reason"] = "Exploitation completed. Post-exploitation phase is disabled."
+                updates["messages"] = [
+                    AIMessage(content="Exploitation completed successfully. "
+                                     "Post-exploitation phase is not available because ACTIVATE_POST_EXPL_PHASE=False. "
+                                     "If you need post-exploitation capabilities, set ACTIVATE_POST_EXPL_PHASE=True in params.py.")
+                ]
+                return updates
+
             # Ignore transition to same phase - just continue
             if to_phase == phase:
                 logger.warning(f"[{user_id}/{project_id}/{session_id}] Ignoring transition to same phase: {phase}")
@@ -496,7 +707,26 @@ class AgentOrchestrator:
                     logger.info(f"[{user_id}/{project_id}/{session_id}] Looping back to think")
                 return updates
 
-            # Check if approval is required
+            # AUTO-APPROVE: Downgrade to informational (safe, no approval needed)
+            # Per user preference: auto-downgrade when transitioning to informational from later phases
+            if to_phase == "informational" and phase in ["exploitation", "post_exploitation"]:
+                logger.info(f"[{user_id}/{project_id}/{session_id}] Auto-approving safe downgrade: {phase} → informational")
+                updates["current_phase"] = to_phase
+                updates["phase_history"] = state.get("phase_history", []) + [
+                    PhaseHistoryEntry(phase=to_phase).model_dump()
+                ]
+                updates["_just_transitioned_to"] = to_phase
+
+                # Add system message to context
+                updates["messages"] = [
+                    AIMessage(content=f"Automatically transitioned from {phase} to informational phase for new objective.")
+                ]
+
+                # Continue to next iteration (will call think node again with new phase)
+                # Don't set action explicitly - let routing continue
+                return updates
+
+            # Check if approval is required (for exploitation/post-exploitation upgrades)
             needs_approval = (
                 (to_phase == "exploitation" and REQUIRE_APPROVAL_FOR_EXPLOITATION) or
                 (to_phase == "post_exploitation" and REQUIRE_APPROVAL_FOR_POST_EXPLOITATION)
@@ -522,7 +752,7 @@ class AgentOrchestrator:
             # Handle ask_user action - agent wants to ask user a question
             user_q = decision.user_question
             if user_q:
-                logger.info(f"[{user_id}/{project_id}/{session_id}] Asking user: {user_q.question[:50]}...")
+                logger.info(f"[{user_id}/{project_id}/{session_id}] Asking user: {user_q.question[:10000]}")
                 updates["pending_question"] = UserQuestionRequest(
                     question=user_q.question,
                     context=user_q.context,
@@ -534,6 +764,53 @@ class AgentOrchestrator:
                 updates["awaiting_user_question"] = True
             else:
                 logger.warning(f"[{user_id}/{project_id}/{session_id}] ask_user action but no user_question provided")
+
+        # Pre-exploitation validation: Force ask_user when session params are missing
+        # This only applies in statefull mode (POST_EXPL_PHASE_TYPE="statefull") when agent tries
+        # to use metasploit_console but LHOST/LPORT/BIND_PORT are not configured
+        if (POST_EXPL_PHASE_TYPE == "statefull" and
+            decision.action == "use_tool" and
+            decision.tool_name == "metasploit_console" and
+            not updates.get("awaiting_user_question")):
+
+            config_complete, missing_params = is_session_config_complete()
+
+            if not config_complete:
+                # Check if user already answered these questions in qa_history
+                qa_history = state.get("qa_history", [])
+                answered_params = set()
+                for qa in qa_history:
+                    answer = qa.get("answer", {})
+                    answer_text = answer.get("answer", "") if answer else ""
+                    question_obj = qa.get("question", {})
+                    question_text = question_obj.get("question", "") if question_obj else ""
+
+                    # Simple heuristic: if question mentions LHOST/LPORT and has an answer
+                    if answer_text:
+                        if "LHOST" in question_text.upper():
+                            answered_params.add("LHOST")
+                        if "LPORT" in question_text.upper():
+                            answered_params.add("LPORT")
+                        if "BIND" in question_text.upper():
+                            answered_params.add("LPORT or BIND_PORT_ON_TARGET")
+
+                # Remove already-answered params from missing list
+                still_missing = [p for p in missing_params if p not in answered_params]
+
+                if still_missing:
+                    # Force ask_user action instead of use_tool
+                    logger.info(f"[{user_id}/{project_id}/{session_id}] Forcing ask_user: missing session params {still_missing}")
+                    updates["_decision"]["action"] = "ask_user"
+                    updates["pending_question"] = UserQuestionRequest(
+                        question=f"Please provide the following required parameters for session-based exploitation: {', '.join(still_missing)}",
+                        context="Session-based exploitation requires these parameters to be configured. "
+                                "LHOST is your attacker IP address where the target will connect back. "
+                                "LPORT is the port you will listen on. "
+                                "For bind payloads, BIND_PORT is the port the target will open.",
+                        format="text",
+                        phase=phase,
+                    ).model_dump()
+                    updates["awaiting_user_question"] = True
 
         return updates
 
@@ -558,7 +835,7 @@ class AgentOrchestrator:
                 # Truncate long values for readability
                 val_str = str(value)
                 if len(val_str) > 200:
-                    val_str = val_str[:200] + "..."
+                    val_str = val_str[:10000]
                 logger.info(f"  {key}: {val_str}")
         else:
             logger.info("  (no arguments)")
@@ -579,6 +856,17 @@ class AgentOrchestrator:
         # Set context
         set_tenant_context(user_id, project_id)
         set_phase_context(phase)
+
+        # Auto-reset Metasploit on first use in this session
+        msf_reset_done = state.get("msf_session_reset_done", False)
+        extra_updates = {}
+        if tool_name == "metasploit_console" and not msf_reset_done:
+            logger.info(f"[{user_id}/{project_id}/{session_id}] Auto-resetting Metasploit state (first use in session)")
+            # Restart msfconsole completely for a clean state
+            # This kills any stuck sessions and starts fresh
+            await self.tool_executor.execute("msf_restart", {}, phase)
+            extra_updates["msf_session_reset_done"] = True
+            logger.info(f"[{user_id}/{project_id}/{session_id}] Metasploit reset complete")
 
         # Execute the tool
         result = await self.tool_executor.execute(tool_name, tool_args, phase)
@@ -604,20 +892,22 @@ class AgentOrchestrator:
 
         logger.info(f"TOOL_OUTPUT ({len(tool_output)} chars):")
         if tool_output:
-            # Show first 1000 chars of output for debugging
-            output_preview = tool_output[:1000]
-            for line in output_preview.split('\n')[:20]:  # Max 20 lines
+            output_preview = tool_output[:100000]
+            for line in output_preview.split('\n'):
                 logger.info(f"  | {line}")
-            if len(tool_output) > 1000:
-                logger.info(f"  | ... ({len(tool_output) - 1000} more chars)")
+            if len(tool_output) > 100000:
+                logger.info(f"  | ... ({len(tool_output) - 100000} more chars)")
         else:
             logger.info("  (empty output)")
         logger.info(f"{'='*60}\n")
 
-        return {
+        updates = {
             "_current_step": step_data,
             "_tool_result": result or {"success": False, "error": "No result"},
         }
+        # Include any extra updates (e.g., msf_session_reset_done)
+        updates.update(extra_updates)
+        return updates
 
     async def _analyze_output_node(self, state: AgentState, config = None) -> dict:
         """Analyze tool output and extract intelligence."""
@@ -644,8 +934,10 @@ class AgentOrchestrator:
         response = await self.llm.ainvoke([HumanMessage(content=analysis_prompt)])
         analysis = self._parse_analysis_response(response.content)
 
-        # Update step with analysis
+        # Update step with analysis and rich data for streaming
         step_data["output_analysis"] = analysis.interpretation
+        step_data["actionable_findings"] = analysis.actionable_findings or []
+        step_data["recommended_next_steps"] = analysis.recommended_next_steps or []
 
         # Detailed logging - output analysis
         logger.info(f"\n{'='*60}")
@@ -655,10 +947,8 @@ class AgentOrchestrator:
         logger.info(f"OUTPUT_ANALYSIS:")
         interpretation = analysis.interpretation or "(no interpretation)"
         # Show interpretation with nice formatting
-        for line in interpretation.split('\n')[:15]:  # Max 15 lines
+        for line in interpretation.split('\n'):
             logger.info(f"  | {line}")
-        if len(interpretation.split('\n')) > 15:
-            logger.info(f"  | ... ({len(interpretation.split(chr(10))) - 15} more lines)")
 
         # Log extracted info
         extracted = analysis.extracted_info
@@ -682,13 +972,13 @@ class AgentOrchestrator:
         # Log actionable findings
         if analysis.actionable_findings:
             logger.info(f"ACTIONABLE FINDINGS:")
-            for finding in analysis.actionable_findings[:5]:  # Max 5
+            for finding in analysis.actionable_findings:
                 logger.info(f"  - {finding}")
 
         # Log recommended next steps
         if analysis.recommended_next_steps:
             logger.info(f"RECOMMENDED NEXT STEPS:")
-            for step_rec in analysis.recommended_next_steps[:5]:  # Max 5
+            for step_rec in analysis.recommended_next_steps:
                 logger.info(f"  - {step_rec}")
 
         logger.info(f"{'='*60}\n")
@@ -706,11 +996,32 @@ class AgentOrchestrator:
         )
         merged_target = current_target.merge_from(new_target)
 
+        # Special handling for statefull exploitation - detect session events
+        if POST_EXPL_PHASE_TYPE == "statefull" and phase == "exploitation":
+            tool_output_lower = tool_output.lower() if tool_output else ""
+
+            # Detect session establishment from output
+            session_match = re.search(
+                r'(?:session|Session)\s+(\d+)\s+opened',
+                tool_output or ""
+            )
+            if session_match:
+                session_id_detected = int(session_match.group(1))
+                if session_id_detected not in merged_target.sessions:
+                    merged_target = merged_target.model_copy(
+                        update={"sessions": merged_target.sessions + [session_id_detected]}
+                    )
+                    logger.info(f"[{user_id}/{project_id}/{session_id}] Detected session {session_id_detected} from exploit output")
+
+            # Detect stage transfer indicator (session may be coming)
+            elif "sending stage" in tool_output_lower:
+                logger.info(f"[{user_id}/{project_id}/{session_id}] Stage transfer detected - agent should use msf_wait_for_session")
+
         # Add step to execution trace
         execution_trace = state.get("execution_trace", []) + [step_data]
 
         # Add AI message to conversation
-        analysis_summary = analysis.interpretation or tool_output[:500]
+        analysis_summary = analysis.interpretation or tool_output[:10000]
 
         return {
             "_current_step": step_data,
@@ -766,12 +1077,20 @@ class AgentOrchestrator:
             # Transition to new phase
             new_phase = transition.get("to_phase", "exploitation")
             logger.info(f"[{user_id}/{project_id}/{session_id}] Transitioning to phase: {new_phase}")
+
+            # Update objective's required_phase hint
+            objectives = state.get("conversation_objectives", [])
+            current_idx = state.get("current_objective_index", 0)
+            if current_idx < len(objectives):
+                objectives[current_idx]["required_phase"] = new_phase
+
             return {
                 **clear_approval_state,
                 "current_phase": new_phase,
                 "phase_history": state.get("phase_history", []) + [
                     PhaseHistoryEntry(phase=new_phase).model_dump()
                 ],
+                "conversation_objectives": objectives,  # Updated
                 "messages": [AIMessage(content=f"Phase transition approved. Now in **{new_phase}** phase.")],
                 # Mark that we just transitioned to prevent re-requesting
                 "_just_transitioned_to": new_phase,
@@ -801,7 +1120,7 @@ class AgentOrchestrator:
 
         question = state.get("pending_question", {})
 
-        logger.info(f"[{user_id}/{project_id}/{session_id}] Awaiting answer: {question.get('question', '')[:50]}...")
+        logger.info(f"[{user_id}/{project_id}/{session_id}] Awaiting answer: {question.get('question', '')[:10000]}")
 
         # Format options for display
         options_text = ""
@@ -831,7 +1150,7 @@ class AgentOrchestrator:
         answer = state.get("user_question_answer")
         question = state.get("pending_question", {})
 
-        logger.info(f"[{user_id}/{project_id}/{session_id}] Processing answer: {answer[:50] if answer else 'None'}...")
+        logger.info(f"[{user_id}/{project_id}/{session_id}] Processing answer: {answer[:10000] if answer else 'None'}")
 
         # Create Q&A history entry
         qa_entry = QAHistoryEntry(
@@ -870,7 +1189,12 @@ class AgentOrchestrator:
             iteration_count=state.get("current_iteration", 0),
             final_phase=state.get("current_phase", "informational"),
             completion_reason=state.get("completion_reason", "Session ended"),
-            execution_trace=format_execution_trace(state.get("execution_trace", []), last_n=10),
+            execution_trace=format_execution_trace(
+                state.get("execution_trace", []),
+                objectives=state.get("conversation_objectives", []),
+                objective_history=state.get("objective_history", []),
+                current_objective_index=state.get("current_objective_index", 0)
+            ),
             target_info=json.dumps(state.get("target_info", {}), indent=2),
             todo_list=format_todo_list(state.get("todo_list", [])),
         )
@@ -880,6 +1204,7 @@ class AgentOrchestrator:
         return {
             "messages": [AIMessage(content=response.content)],
             "task_complete": True,
+            "completion_reason": state.get("completion_reason") or "Task completed successfully",
         }
 
     # =========================================================================
@@ -1054,7 +1379,7 @@ class AgentOrchestrator:
         if not self._initialized:
             raise RuntimeError("Orchestrator not initialized. Call initialize() first.")
 
-        logger.info(f"[{user_id}/{project_id}/{session_id}] Invoking with: {question[:50]}...")
+        logger.info(f"[{user_id}/{project_id}/{session_id}] Invoking with: {question[:10000]}")
 
         try:
             config = create_config(user_id, project_id, session_id)
@@ -1123,7 +1448,7 @@ class AgentOrchestrator:
         if not self._initialized:
             raise RuntimeError("Orchestrator not initialized. Call initialize() first.")
 
-        logger.info(f"[{user_id}/{project_id}/{session_id}] Resuming with answer: {answer[:50]}...")
+        logger.info(f"[{user_id}/{project_id}/{session_id}] Resuming with answer: {answer[:10000]}")
 
         try:
             config = create_config(user_id, project_id, session_id)
@@ -1219,7 +1544,7 @@ class AgentOrchestrator:
         if not self._initialized:
             raise RuntimeError("Orchestrator not initialized. Call initialize() first.")
 
-        logger.info(f"[{user_id}/{project_id}/{session_id}] Invoking with streaming: {question[:50]}...")
+        logger.info(f"[{user_id}/{project_id}/{session_id}] Invoking with streaming: {question[:10000]}")
 
         try:
             config = create_config(user_id, project_id, session_id)
@@ -1316,7 +1641,7 @@ class AgentOrchestrator:
         if not self._initialized:
             raise RuntimeError("Orchestrator not initialized. Call initialize() first.")
 
-        logger.info(f"[{user_id}/{project_id}/{session_id}] Resuming with streaming answer: {answer[:50]}...")
+        logger.info(f"[{user_id}/{project_id}/{session_id}] Resuming with streaming answer: {answer[:10000]}")
 
         try:
             config = create_config(user_id, project_id, session_id)
@@ -1377,45 +1702,8 @@ class AgentOrchestrator:
             if state.get("awaiting_user_question") and state.get("pending_question"):
                 await callback.on_question_request(state["pending_question"])
 
-            # Execution step (from _current_step)
-            if "_current_step" in state and state["_current_step"]:
-                step = state["_current_step"]
-                # Emit tool start
-                if step.get("tool_name") and not step.get("_emitted_start"):
-                    await callback.on_tool_start(
-                        step["tool_name"],
-                        step.get("tool_args", {})
-                    )
-                    step["_emitted_start"] = True
-
-                # Emit tool output chunk
-                if step.get("tool_output"):
-                    await callback.on_tool_output_chunk(
-                        step.get("tool_name", "unknown"),
-                        step["tool_output"],
-                        is_final=True
-                    )
-
-                # Emit tool complete
-                if step.get("success") is not None and not step.get("_emitted_complete"):
-                    await callback.on_tool_complete(
-                        step.get("tool_name", "unknown"),
-                        step["success"],
-                        step.get("output_analysis", "")[:500]
-                    )
-                    step["_emitted_complete"] = True
-
-                # Emit execution step summary
-                await callback.on_execution_step({
-                    "iteration": step.get("iteration", 0),
-                    "phase": state.get("current_phase", "informational"),
-                    "thought": step.get("thought", ""),
-                    "tool_name": step.get("tool_name"),
-                    "success": step.get("success", False),
-                    "output_summary": step.get("output_analysis", "")[:200]
-                })
-
-            # Emit thinking (from _decision stored by _think_node)
+            # Emit thinking FIRST (from _decision stored by _think_node)
+            # This ensures thinking appears BEFORE the tool execution it leads to
             if "_decision" in state and state["_decision"]:
                 decision = state["_decision"]
                 # Only emit if we haven't emitted this decision yet
@@ -1432,10 +1720,58 @@ class AgentOrchestrator:
                     except Exception as e:
                         logger.error(f"Error emitting thinking event: {e}")
 
-            # Task complete
-            if state.get("task_complete"):
+            # Execution step (from _current_step) - AFTER thinking
+            if "_current_step" in state and state["_current_step"]:
+                step = state["_current_step"]
+                # Emit tool start
+                if step.get("tool_name") and not step.get("_emitted_start"):
+                    await callback.on_tool_start(
+                        step["tool_name"],
+                        step.get("tool_args", {})
+                    )
+                    step["_emitted_start"] = True
+
+                # Emit tool output chunk (raw tool output)
+                if step.get("tool_output") and not step.get("_emitted_output"):
+                    await callback.on_tool_output_chunk(
+                        step.get("tool_name", "unknown"),
+                        step["tool_output"],
+                        is_final=True
+                    )
+                    step["_emitted_output"] = True
+
+                # Emit tool complete ONLY after analysis is done (output_analysis exists)
+                # This ensures we have all the rich data to send
+                if step.get("success") is not None and step.get("output_analysis") and not step.get("_emitted_complete"):
+                    await callback.on_tool_complete(
+                        step.get("tool_name", "unknown"),
+                        step["success"],
+                        step.get("output_analysis", "")[:10000],
+                        # Include rich analysis data
+                        actionable_findings=step.get("actionable_findings", []),
+                        recommended_next_steps=step.get("recommended_next_steps", []),
+                    )
+                    step["_emitted_complete"] = True
+
+                # Emit execution step summary (only after analysis)
+                if step.get("output_analysis"):
+                    await callback.on_execution_step({
+                        "iteration": step.get("iteration", 0),
+                        "phase": state.get("current_phase", "informational"),
+                        "thought": step.get("thought", ""),
+                        "tool_name": step.get("tool_name"),
+                        "success": step.get("success", False),
+                        "output_summary": step.get("output_analysis", "")[:10000],
+                        "actionable_findings": step.get("actionable_findings", []),
+                        "recommended_next_steps": step.get("recommended_next_steps", []),
+                    })
+
+            # Task complete - only emit if this is a genuine completion, not stale state
+            # We check for completion_reason to ensure this is from _generate_response_node
+            # and not just residual state from a previous completed task
+            if state.get("task_complete") and state.get("completion_reason"):
                 await callback.on_task_complete(
-                    "Task completed successfully",
+                    state.get("completion_reason", "Task completed successfully"),
                     state.get("current_phase", "informational"),
                     state.get("current_iteration", 0)
                 )

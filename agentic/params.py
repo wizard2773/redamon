@@ -8,13 +8,15 @@ Configuration constants for the agent orchestrator.
 # LLM CONFIGURATION
 # =============================================================================
 
-OPENAI_MODEL = "gpt-4.1"
+OPENAI_MODEL = "gpt-5.2"
 
 INFORMATIONAL_SYSTEM_PROMPT = ""
 EXPL_SYSTEM_PROMPT = ""
 POST_EXPL_SYSTEM_PROMPT = ""
 
-POST_EXPL_SESSION = False
+
+ACTIVATE_POST_EXPL_PHASE = True
+POST_EXPL_PHASE_TYPE = "statefull" # stateless or statefull, it will be considered if ACTIVATE_POST_EXPL_PHASE = True
 
 # =============================================================================
 # PAYLOAD DIRECTION CONFIGURATION
@@ -70,14 +72,23 @@ POST_EXPL_SESSION = False
 #           After exploit, you connect to RHOST:4444
 #
 
+
+
 # -----------------------------------------------------------------------------
 # REVERSE PAYLOAD SETTINGS (when LPORT is set)
 # -----------------------------------------------------------------------------
 
-# LHOST: Your attacker IP address for reverse payloads.
-# The target will connect BACK to this IP.
-# Must be reachable from the target network.
-# Examples: "172.28.0.2" (Docker), "192.168.1.50" (LAN), "10.10.14.5" (HTB VPN)
+# LHOST: Your attacker IP address (only used for REVERSE payloads)
+#
+#   REVERSE payload (LPORT is set):
+#     - LHOST is REQUIRED - target connects BACK to this IP
+#     - Must be reachable from the target network
+#     - Examples: "172.28.0.2" (Docker), "192.168.1.50" (LAN), "10.10.14.5" (HTB VPN)
+#
+#   BIND payload (LPORT is None):
+#     - LHOST is NOT USED - you can leave it as None
+#     - You connect TO the target, not the other way around
+#
 LHOST = None
 
 # LPORT: Your listening port for reverse connections.
@@ -126,6 +137,8 @@ MCP_METASPLOIT_URL = "http://host.docker.internal:8003/sse"
 # Maximum iterations before forcing completion
 MAX_ITERATIONS = 100
 
+EXECUTION_TRACE_MEMORY_STEPS = 100
+
 # Phase transition approval requirements
 REQUIRE_APPROVAL_FOR_EXPLOITATION = True
 REQUIRE_APPROVAL_FOR_POST_EXPLOITATION = True
@@ -172,6 +185,7 @@ TOOL_PHASE_MAP = {
     "msf_session_interact": ["exploitation", "post_exploitation"],  # Get session info
     "msf_session_close": ["exploitation", "post_exploitation"],  # Close a session
     "msf_status": ["exploitation", "post_exploitation"],  # Get msfconsole status
+    "msf_wait_for_session": ["exploitation", "post_exploitation"],  # Wait for session establishment (polling)
 }
 
 

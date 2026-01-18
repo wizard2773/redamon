@@ -103,6 +103,8 @@ export function AIAssistantDrawer({
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const isProcessingApproval = useRef(false)
   const awaitingApprovalRef = useRef(false)
+  const isProcessingQuestion = useRef(false)
+  const awaitingQuestionRef = useRef(false)
   const shouldAutoScroll = useRef(true)
 
   const scrollToBottom = useCallback((force = false) => {
@@ -152,6 +154,8 @@ export function AIAssistantDrawer({
     setTodoList([])
     awaitingApprovalRef.current = false
     isProcessingApproval.current = false
+    awaitingQuestionRef.current = false
+    isProcessingQuestion.current = false
     shouldAutoScroll.current = true // Reset to auto-scroll on new session
   }, [sessionId])
 
@@ -192,16 +196,24 @@ export function AIAssistantDrawer({
         break
 
       case MessageType.TOOL_OUTPUT_CHUNK:
-        // Append output chunk to last tool execution item
+        // Append output chunk to the matching tool execution item (by tool_name)
         setChatItems(prev => {
-          const lastItem = prev[prev.length - 1]
-          if (lastItem && 'type' in lastItem && lastItem.type === 'tool_execution') {
+          // Find the tool execution item by tool_name (handles any ordering)
+          const toolIndex = prev.findIndex(
+            item => 'type' in item &&
+                    item.type === 'tool_execution' &&
+                    item.tool_name === message.payload.tool_name &&
+                    item.status === 'running'
+          )
+          if (toolIndex !== -1) {
+            const toolItem = prev[toolIndex] as ToolExecutionItem
             return [
-              ...prev.slice(0, -1),
+              ...prev.slice(0, toolIndex),
               {
-                ...lastItem,
-                output_chunks: [...lastItem.output_chunks, message.payload.chunk],
-              }
+                ...toolItem,
+                output_chunks: [...toolItem.output_chunks, message.payload.chunk],
+              },
+              ...prev.slice(toolIndex + 1)
             ]
           }
           return prev
@@ -209,18 +221,28 @@ export function AIAssistantDrawer({
         break
 
       case MessageType.TOOL_COMPLETE:
-        // Mark tool as complete
+        // Mark tool as complete and add rich analysis data
         setChatItems(prev => {
-          const lastItem = prev[prev.length - 1]
-          if (lastItem && 'type' in lastItem && lastItem.type === 'tool_execution') {
+          // Find the tool execution item (may not be the last item due to message ordering)
+          const toolIndex = prev.findIndex(
+            item => 'type' in item &&
+                    item.type === 'tool_execution' &&
+                    item.tool_name === message.payload.tool_name &&
+                    item.status === 'running'
+          )
+          if (toolIndex !== -1) {
+            const toolItem = prev[toolIndex] as ToolExecutionItem
             const updatedItem: ToolExecutionItem = {
-              ...lastItem,
+              ...toolItem,
               status: message.payload.success ? 'success' : 'error',
               final_output: message.payload.output_summary,
+              actionable_findings: message.payload.actionable_findings || [],
+              recommended_next_steps: message.payload.recommended_next_steps || [],
             }
             return [
-              ...prev.slice(0, -1),
-              updatedItem
+              ...prev.slice(0, toolIndex),
+              updatedItem,
+              ...prev.slice(toolIndex + 1)
             ]
           }
           return prev
@@ -264,6 +286,14 @@ export function AIAssistantDrawer({
         break
 
       case MessageType.QUESTION_REQUEST:
+        // Ignore duplicate question requests if we're already awaiting or just processed one
+        if (awaitingQuestionRef.current || isProcessingQuestion.current) {
+          console.log('Ignoring duplicate question request - already processing')
+          break
+        }
+
+        console.log('Received question request:', message.payload)
+        awaitingQuestionRef.current = true
         setAwaitingQuestion(true)
         setQuestionRequest(message.payload)
         setIsLoading(false)
@@ -396,7 +426,16 @@ export function AIAssistantDrawer({
   }, [modificationText, sendApproval, awaitingApproval])
 
   const handleAnswer = useCallback(() => {
+    // Prevent double submission using ref (immediate check, not async state)
+    if (!awaitingQuestion || isProcessingQuestion.current || !awaitingQuestionRef.current) {
+      return
+    }
+
     if (!questionRequest) return
+
+    // Mark as processing immediately
+    isProcessingQuestion.current = true
+    awaitingQuestionRef.current = false
 
     setAwaitingQuestion(false)
     setQuestionRequest(null)
@@ -421,8 +460,15 @@ export function AIAssistantDrawer({
       setSelectedOptions([])
     } catch (error) {
       setIsLoading(false)
+      awaitingQuestionRef.current = false
+      isProcessingQuestion.current = false
+    } finally {
+      // Reset the processing flag after a delay to prevent backend from sending duplicate
+      setTimeout(() => {
+        isProcessingQuestion.current = false
+      }, 1000)
     }
-  }, [questionRequest, answerText, selectedOptions, sendAnswer])
+  }, [questionRequest, answerText, selectedOptions, sendAnswer, awaitingQuestion])
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -450,6 +496,8 @@ export function AIAssistantDrawer({
     setTodoList([])
     awaitingApprovalRef.current = false
     isProcessingApproval.current = false
+    awaitingQuestionRef.current = false
+    isProcessingQuestion.current = false
     shouldAutoScroll.current = true // Reset to auto-scroll on new chat
     onResetSession?.()
   }

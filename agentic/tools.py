@@ -402,6 +402,50 @@ class PhaseAwareToolExecutor:
             if tool_name:
                 self._all_tools[tool_name] = tool
 
+    def _extract_text_from_output(self, output) -> str:
+        """
+        Extract clean text from MCP tool output.
+
+        MCP tools return responses in various formats:
+        - List of content blocks: [{'type': 'text', 'text': '...', 'id': '...'}]
+        - Plain string
+        - Other formats
+
+        This method normalizes all formats to clean text.
+        """
+        if output is None:
+            return ""
+
+        # If it's already a string, return it
+        if isinstance(output, str):
+            return output
+
+        # If it's a list (MCP content blocks format)
+        if isinstance(output, list):
+            text_parts = []
+            for item in output:
+                if isinstance(item, dict):
+                    # Extract 'text' field from content block
+                    if 'text' in item:
+                        text_parts.append(item['text'])
+                    elif 'content' in item:
+                        text_parts.append(str(item['content']))
+                elif isinstance(item, str):
+                    text_parts.append(item)
+            return '\n'.join(text_parts) if text_parts else str(output)
+
+        # If it's a dict with 'text' or 'content'
+        if isinstance(output, dict):
+            if 'text' in output:
+                return output['text']
+            if 'content' in output:
+                return str(output['content'])
+            if 'output' in output:
+                return str(output['output'])
+
+        # Fallback: convert to string
+        return str(output)
+
     async def execute(
         self,
         tool_name: str,
@@ -447,9 +491,13 @@ class PhaseAwareToolExecutor:
                 # MCP tools - invoke with the appropriate argument
                 output = await tool.ainvoke(tool_args)
 
+            # Extract clean text from MCP response
+            # MCP returns list of content blocks: [{'type': 'text', 'text': '...', 'id': '...'}]
+            clean_output = self._extract_text_from_output(output)
+
             return {
                 "success": True,
-                "output": str(output),
+                "output": clean_output,
                 "error": None
             }
 

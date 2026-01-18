@@ -16,6 +16,7 @@ import os
 import re
 from pathlib import Path
 from datetime import datetime
+from urllib.parse import urlparse
 from neo4j import GraphDatabase
 from dotenv import load_dotenv
 
@@ -702,24 +703,40 @@ class Neo4jClient:
                     # BaseURLs are served by HTTP/HTTPS services running on ports
                     if host:
                         resolved_ip = url_info.get("ip")
-                        # Determine port from scheme (default ports for HTTP/HTTPS)
-                        port_number = 443 if scheme == "https" else 80
-                        service_name = "https" if scheme == "https" else "http"
+                        # Extract actual port from URL (e.g., http://example.com:8080)
+                        # Only use default ports (80/443) if no explicit port in URL
+                        parsed_url = urlparse(url)
+                        port_number = parsed_url.port or (443 if scheme == "https" else 80)
+                        default_service_name = "https" if scheme == "https" else "http"
 
                         if resolved_ip:
-                            # Ensure the Service node exists for this IP/port combination
-                            session.run(
+                            # Check if a service already exists for this port/IP (from port scan)
+                            # If so, reuse it instead of creating a duplicate with different name
+                            existing_service = session.run(
                                 """
-                                MERGE (svc:Service {name: $service_name, port_number: $port_number, ip_address: $ip_addr})
-                                SET svc.user_id = $user_id,
-                                    svc.project_id = $project_id,
-                                    svc.updated_at = datetime()
+                                MATCH (svc:Service {port_number: $port_number, ip_address: $ip_addr})
+                                RETURN svc.name as name LIMIT 1
                                 """,
-                                service_name=service_name, port_number=port_number, ip_addr=resolved_ip,
-                                user_id=user_id, project_id=project_id
-                            )
+                                port_number=port_number, ip_addr=resolved_ip
+                            ).single()
 
-                            stats["services_created"] += 1
+                            if existing_service:
+                                # Use the existing service name (e.g., http-proxy from port scan)
+                                service_name = existing_service["name"]
+                            else:
+                                # No existing service, create one with default name (http/https)
+                                service_name = default_service_name
+                                session.run(
+                                    """
+                                    MERGE (svc:Service {name: $service_name, port_number: $port_number, ip_address: $ip_addr})
+                                    SET svc.user_id = $user_id,
+                                        svc.project_id = $project_id,
+                                        svc.updated_at = datetime()
+                                    """,
+                                    service_name=service_name, port_number=port_number, ip_addr=resolved_ip,
+                                    user_id=user_id, project_id=project_id
+                                )
+                                stats["services_created"] += 1
 
                             # Create relationship: Service -[:SERVES_URL]-> BaseURL
                             session.run(

@@ -138,11 +138,31 @@ export function ToolExecutionCard({ item, isExpanded, onToggleExpand }: ToolExec
 
       {isExpanded && (
         <div className={styles.cardContent}>
-          {/* Output */}
+          {/* Tool Arguments (expanded view) */}
+          {item.tool_args && Object.keys(item.tool_args).length > 0 && (
+            <div className={styles.section}>
+              <div className={styles.sectionLabel}>Arguments</div>
+              <div className={styles.sectionContent}>
+                <div className={styles.argsExpanded}>
+                  {Object.entries(item.tool_args).map(([key, value]) => {
+                    const valueStr = typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+                    return (
+                      <div key={key} className={styles.argItemExpanded}>
+                        <span className={styles.argKeyExpanded}>{key}:</span>
+                        <pre className={styles.argValueExpanded}>{valueStr}</pre>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Raw Output */}
           {item.output_chunks.length > 0 && (
             <div className={styles.section}>
               <div className={styles.sectionLabel}>
-                Output
+                Raw Output
                 {item.status === 'running' && (
                   <span className={styles.streamingLabel}>(streaming)</span>
                 )}
@@ -160,12 +180,40 @@ export function ToolExecutionCard({ item, isExpanded, onToggleExpand }: ToolExec
             </div>
           )}
 
-          {/* Final Output Summary */}
+          {/* Analysis Summary */}
           {item.final_output && (
             <div className={styles.section}>
-              <div className={styles.sectionLabel}>Summary</div>
+              <div className={styles.sectionLabel}>Analysis</div>
               <div className={styles.sectionContent}>
                 <p className={styles.text}>{item.final_output}</p>
+              </div>
+            </div>
+          )}
+
+          {/* Actionable Findings */}
+          {item.actionable_findings && item.actionable_findings.length > 0 && (
+            <div className={styles.section}>
+              <div className={styles.sectionLabel}>Actionable Findings</div>
+              <div className={styles.sectionContent}>
+                <ul className={styles.findingsList}>
+                  {item.actionable_findings.map((finding, index) => (
+                    <li key={index} className={styles.findingItem}>{finding}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          )}
+
+          {/* Recommended Next Steps */}
+          {item.recommended_next_steps && item.recommended_next_steps.length > 0 && (
+            <div className={styles.section}>
+              <div className={styles.sectionLabel}>Recommended Next Steps</div>
+              <div className={styles.sectionContent}>
+                <ul className={styles.stepsList}>
+                  {item.recommended_next_steps.map((step, index) => (
+                    <li key={index} className={styles.stepItem}>{step}</li>
+                  ))}
+                </ul>
               </div>
             </div>
           )}

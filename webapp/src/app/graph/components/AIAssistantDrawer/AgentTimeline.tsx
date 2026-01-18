@@ -37,6 +37,8 @@ export interface ToolExecutionItem {
   output_chunks: string[]
   final_output?: string
   duration?: number
+  actionable_findings?: string[]
+  recommended_next_steps?: string[]
 }
 
 export type TimelineItem = ThinkingItem | ToolExecutionItem

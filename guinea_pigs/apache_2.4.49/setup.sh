@@ -22,8 +22,12 @@ fi
 sudo systemctl start docker
 sudo systemctl enable docker
 
-echo "=== Building and starting container ==="
+echo "=== Cleaning up Docker space ==="
 cd "$(dirname "$0")"
+sudo docker-compose down --volumes --remove-orphans 2>/dev/null || true
+sudo docker system prune -a -f --volumes
+
+echo "=== Building and starting container ==="
 sudo docker-compose up -d --build
 
 echo ""

@@ -26,7 +26,7 @@ import time
 import os
 import re
 import atexit
-from typing import Optional, Set
+from typing import Optional, Set, Dict
 
 # Server configuration
 SERVER_NAME = "metasploit"
@@ -212,6 +212,28 @@ class PersistentMsfConsole:
             output = self._wait_for_output(timeout=timeout, quiet_period=quiet_period)
             return output if output else "(no output)"
 
+    def sync_session_ids(self) -> Dict[int, dict]:
+        """
+        Synchronize internal session_ids set with actual Metasploit state.
+
+        This queries 'sessions -l' and updates the internal tracking to match
+        the authoritative state from Metasploit.
+
+        Returns:
+            Dict of current sessions {session_id: session_info}
+        """
+        output = self.execute("sessions -l", timeout=30, quiet_period=3.0)
+        # Need to import the helper - it's defined after this class
+        # So we call it via module-level function
+        cleaned = _clean_ansi_output(output)
+        actual_sessions = _parse_sessions_output(cleaned)
+        self.session_ids = set(actual_sessions.keys())
+
+        if DEBUG:
+            print(f"[MSF] Synced session_ids: {self.session_ids}")
+
+        return actual_sessions
+
     def stop(self):
         """Stop the msfconsole process."""
         if self.process and self.process.poll() is None:
@@ -222,8 +244,21 @@ class PersistentMsfConsole:
             except:
                 self.process.kill()
             print("[MSF] msfconsole stopped")
+        self.process = None
         self._initialized = False
         self.session_ids.clear()
+
+    def restart(self) -> bool:
+        """Restart the msfconsole process completely."""
+        print("[MSF] Restarting msfconsole process...")
+        self.stop()
+        # Clear the output queue
+        while not self.output_queue.empty():
+            try:
+                self.output_queue.get_nowait()
+            except queue.Empty:
+                break
+        return self.start()
 
 
 # Global singleton instance
@@ -258,17 +293,16 @@ def _get_timing_for_command(command: str) -> tuple[float, float]:
     cmd_lower = command.lower()
 
     if any(x in cmd_lower for x in ['exploit', 'run']):
-        # Exploits need long timeout for stage transfer (can be 3MB+)
-        # and long quiet period to wait for session establishment
-        # Session creation can take 20-30 seconds after "Sending stage..."
-        return (300, 20.0)  # Exploits: 5 min timeout, 20s quiet (was 10s)
+        # Exploits: Long timeout for stage transfer, but shorter quiet period.
+        # The agent should use msf_wait_for_session() for explicit session polling
+        # rather than relying on quiet period to capture session establishment.
+        # 30s quiet captures most exploit output while allowing faster response.
+        return (300, 30.0)  # Exploits: 5 min timeout, 30s quiet
     elif 'search' in cmd_lower:
         return (60, 3.0)   # Search: 1 min timeout, 3s quiet
     elif 'sessions' in cmd_lower:
-        # Sessions commands need extra time after exploit to allow
-        # session registration to complete. Also need time to display
-        # session table if sessions exist.
-        return (60, 8.0)   # Session commands: 60s timeout, 8s quiet (was 5s)
+        # Sessions commands: shorter quiet for faster polling in msf_wait_for_session
+        return (60, 5.0)   # Session commands: 60s timeout, 5s quiet
     elif any(x in cmd_lower for x in ['info', 'show']):
         return (60, 3.0)   # Info/show: 1 min timeout, 3s quiet
     else:
@@ -279,6 +313,8 @@ def _clean_ansi_output(text: str) -> str:
     """
     Remove ANSI escape codes and control characters from msfconsole output.
     Handles terminal echo, carriage returns, backspaces, and escape sequences.
+
+    Also removes garbled command echo lines that look like partial typing.
     """
     # Step 1: Remove ANSI escape sequences (colors, cursor movement, etc.)
     text = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', text)
@@ -321,7 +357,81 @@ def _clean_ansi_output(text: str) -> str:
     while cleaned_lines and not cleaned_lines[-1]:
         cleaned_lines.pop()
 
-    return '\n'.join(cleaned_lines)
+    # Step 5: Remove garbled echo lines (partial command typing artifacts)
+    # These look like: "msf exploit(multi/http/apacset PAYLOAD cmd/unix/pyth"
+    # or lines starting with "<" which are cursor artifacts
+    final_lines = []
+    for line in cleaned_lines:
+        # Skip lines that start with "<" (cursor movement artifacts)
+        if line.startswith('<'):
+            continue
+
+        # Skip lines that look like garbled prompt+partial command
+        # Pattern: "msf ...>" followed by partial command without space
+        # E.g., "msf exploit(multi/http/apacset PAYLOAD" (no space after prompt)
+        if re.match(r'^msf\s+\S+>\S', line):
+            continue
+
+        # Skip very short partial echo lines (less than 5 chars, not a result line)
+        if len(line) < 5 and not line.startswith('[') and '=>' not in line:
+            continue
+
+        final_lines.append(line)
+
+    return '\n'.join(final_lines)
+
+
+def _parse_sessions_output(output: str) -> Dict[int, dict]:
+    """
+    Parse sessions table from 'sessions -l' output.
+
+    This provides authoritative session state by parsing the actual table output,
+    rather than relying on fragile event detection.
+
+    Args:
+        output: Raw output from 'sessions -l' command
+
+    Returns:
+        Dict mapping session_id to session info:
+        {session_id: {'type': str, 'info': str, 'connection': str}}
+    """
+    sessions = {}
+    lines = output.split('\n')
+    in_table = False
+
+    for line in lines:
+        # Clean the line
+        clean_line = line.strip()
+
+        # Detect header row (Id, Name, Type, Information, Connection)
+        if 'Id' in clean_line and 'Type' in clean_line:
+            in_table = True
+            continue
+
+        # Skip separator row (dashes)
+        if in_table and clean_line.startswith('--'):
+            continue
+
+        # Skip "No active sessions" message
+        if 'no active sessions' in clean_line.lower():
+            break
+
+        # Parse data rows
+        if in_table and clean_line:
+            # Split into parts: Id, Name, Type, Information, Connection
+            # Use maxsplit to preserve connection string which may have spaces
+            parts = clean_line.split(None, 4)
+
+            if len(parts) >= 1 and parts[0].isdigit():
+                session_id = int(parts[0])
+                sessions[session_id] = {
+                    'name': parts[1] if len(parts) > 1 else '',
+                    'type': parts[2] if len(parts) > 2 else 'unknown',
+                    'info': parts[3] if len(parts) > 3 else '',
+                    'connection': parts[4] if len(parts) > 4 else '',
+                }
+
+    return sessions
 
 
 def _execute_msf_command(command: str) -> str:
@@ -401,19 +511,43 @@ def msf_session_run(session_id: int, command: str) -> str:
     """
     Run a command on a specific Meterpreter/shell session.
 
+    This tool validates that the session exists before executing the command,
+    preventing confusing errors when trying to use a non-existent session.
+
     Args:
         session_id: The session ID (from sessions -l)
         command: The command to run on the target system
 
     Returns:
-        The command output from the target system
+        The command output from the target system, or error if session not found
 
     Examples:
         msf_session_run(1, "whoami")
         msf_session_run(1, "cat /etc/passwd")
         msf_session_run(1, "id")
     """
-    # Escape single quotes in command
+    msf = get_msf_console()
+
+    # First, validate session exists
+    output = msf.execute("sessions -l", timeout=30, quiet_period=3.0)
+    output = _clean_ansi_output(output)
+    active_sessions = _parse_sessions_output(output)
+
+    # Update internal tracking
+    msf.session_ids = set(active_sessions.keys())
+
+    if session_id not in active_sessions:
+        available = sorted(active_sessions.keys()) if active_sessions else "none"
+        return (
+            f"[ERROR] Session {session_id} not found.\n"
+            f"Available sessions: {available}\n"
+            "\n"
+            "The session may have died or been closed.\n"
+            "Use msf_sessions_list to see current sessions, or\n"
+            "use msf_wait_for_session if you just ran an exploit."
+        )
+
+    # Session exists, execute the command
     safe_command = command.replace("'", "'\\''")
     return _execute_msf_command(f"sessions -c '{safe_command}' -i {session_id}")
 
@@ -430,6 +564,29 @@ def msf_session_close(session_id: int) -> str:
         Confirmation of session closure
     """
     return _execute_msf_command(f"sessions -k {session_id}")
+
+
+@mcp.tool()
+def msf_restart() -> str:
+    """
+    Restart the msfconsole process completely.
+
+    Use this when msfconsole is in a bad state (e.g., stuck in a session,
+    commands not working, or returning shell errors like '/bin/sh: command not found').
+
+    This will:
+    - Kill the current msfconsole process
+    - Start a fresh msfconsole instance
+    - Clear all sessions and module state
+
+    Returns:
+        Status message indicating success or failure
+    """
+    msf = get_msf_console()
+    if msf.restart():
+        return "msfconsole restarted successfully. All sessions cleared, fresh state."
+    else:
+        return "[ERROR] Failed to restart msfconsole"
 
 
 @mcp.tool()
@@ -450,6 +607,113 @@ Tracked sessions: {len(msf.session_ids)} ({sorted(msf.session_ids) if msf.sessio
 Use 'sessions -l' for full session details."""
     else:
         return "msfconsole: NOT RUNNING"
+
+
+@mcp.tool()
+def msf_wait_for_session(
+    timeout: int = 120,
+    poll_interval: int = 5,
+    expected_session_id: int = None
+) -> str:
+    """
+    Wait for a Meterpreter/shell session to be established after running an exploit.
+
+    Use this tool AFTER running an exploit with a session-based payload (e.g., meterpreter).
+    It polls 'sessions -l' repeatedly until a session appears or the timeout is reached.
+
+    This is essential for statefull exploitation because:
+    - Stage transfer can take 10-30 seconds (Meterpreter is ~3MB)
+    - Session registration in Metasploit can take additional time
+    - Simply running 'exploit' and immediately checking 'sessions -l' may miss the session
+
+    Args:
+        timeout: Maximum seconds to wait for session (default: 120)
+        poll_interval: Seconds between session checks (default: 5)
+        expected_session_id: If specified, wait for this specific session ID
+
+    Returns:
+        Session details if found, or timeout error with troubleshooting hints
+
+    Example workflow:
+        1. Run exploit: metasploit_console("exploit")
+        2. Wait for session: msf_wait_for_session(timeout=120)
+        3. Use session: msf_session_run(1, "whoami")
+    """
+    msf = get_msf_console()
+    start_time = time.time()
+    last_sessions = {}
+    attempts = 0
+
+    print(f"[MSF] Waiting for session (timeout={timeout}s, poll={poll_interval}s)")
+
+    while time.time() - start_time < timeout:
+        attempts += 1
+
+        # Query sessions with shorter timing for polling
+        output = msf.execute("sessions -l", timeout=30, quiet_period=3.0)
+        output = _clean_ansi_output(output)
+        current_sessions = _parse_sessions_output(output)
+
+        # Update internal tracking
+        msf.session_ids = set(current_sessions.keys())
+
+        if DEBUG:
+            print(f"[MSF] Poll {attempts}: found {len(current_sessions)} sessions")
+
+        # Check if expected session exists
+        if expected_session_id is not None:
+            if expected_session_id in current_sessions:
+                session = current_sessions[expected_session_id]
+                print(f"[MSF] Found expected session {expected_session_id}")
+                return (
+                    f"Session {expected_session_id} established!\n"
+                    f"Type: {session['type']}\n"
+                    f"Info: {session['info']}\n"
+                    f"Connection: {session['connection']}\n"
+                    f"(Found after {attempts} polls, {int(time.time() - start_time)}s)"
+                )
+
+        # Check for any new sessions
+        new_sessions = set(current_sessions.keys()) - set(last_sessions.keys())
+        if new_sessions:
+            new_id = min(new_sessions)  # Get lowest new session ID
+            session = current_sessions[new_id]
+            print(f"[MSF] New session {new_id} detected")
+            return (
+                f"New session {new_id} established!\n"
+                f"Type: {session['type']}\n"
+                f"Info: {session['info']}\n"
+                f"Connection: {session['connection']}\n"
+                f"Total active sessions: {len(current_sessions)}\n"
+                f"(Found after {attempts} polls, {int(time.time() - start_time)}s)"
+            )
+
+        last_sessions = current_sessions
+        time.sleep(poll_interval)
+
+    # Timeout reached
+    elapsed = int(time.time() - start_time)
+    existing = list(last_sessions.keys()) if last_sessions else "none"
+
+    print(f"[MSF] Session wait timeout after {elapsed}s")
+
+    return (
+        f"Timeout after {elapsed}s ({attempts} polls). No new session detected.\n"
+        f"Existing sessions: {existing}\n"
+        "\n"
+        "Possible causes:\n"
+        "- Payload couldn't connect back (check LHOST is reachable from target)\n"
+        "- Firewall blocking LPORT (try a different port or use bind payload)\n"
+        "- Exploit didn't succeed (check exploit output for errors)\n"
+        "- Stage transfer still in progress (try longer timeout)\n"
+        "- Target killed the payload (AV/EDR detection)\n"
+        "\n"
+        "Troubleshooting:\n"
+        "- Verify LHOST is your attacker IP reachable from target network\n"
+        "- Verify LPORT is not blocked and not already in use\n"
+        "- Try 'jobs' to see if handler is still listening\n"
+        "- Consider using bind payload instead of reverse"
+    )
 
 
 @mcp.tool()

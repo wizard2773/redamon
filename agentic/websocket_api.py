@@ -184,6 +184,8 @@ class StreamingCallback:
         self.connection = connection
         self._approval_request_sent = False
         self._question_request_sent = False
+        self._task_complete_sent = False
+        self._response_sent = False
 
     async def on_thinking(self, iteration: int, phase: str, thought: str, reasoning: str):
         """Called when agent starts thinking"""
@@ -215,12 +217,21 @@ class StreamingCallback:
             "is_final": is_final
         })
 
-    async def on_tool_complete(self, tool_name: str, success: bool, output_summary: str):
+    async def on_tool_complete(
+        self,
+        tool_name: str,
+        success: bool,
+        output_summary: str,
+        actionable_findings: list = None,
+        recommended_next_steps: list = None,
+    ):
         """Called when tool execution completes"""
         await self.connection.send_message(MessageType.TOOL_COMPLETE, {
             "tool_name": tool_name,
             "success": success,
-            "output_summary": output_summary
+            "output_summary": output_summary,
+            "actionable_findings": actionable_findings or [],
+            "recommended_next_steps": recommended_next_steps or [],
         })
 
     async def on_phase_update(self, current_phase: str, iteration_count: int):
@@ -256,12 +267,17 @@ class StreamingCallback:
 
     async def on_response(self, answer: str, iteration_count: int, phase: str, task_complete: bool):
         """Called when agent provides final response"""
-        await self.connection.send_message(MessageType.RESPONSE, {
-            "answer": answer,
-            "iteration_count": iteration_count,
-            "phase": phase,
-            "task_complete": task_complete
-        })
+        if not self._response_sent:
+            await self.connection.send_message(MessageType.RESPONSE, {
+                "answer": answer,
+                "iteration_count": iteration_count,
+                "phase": phase,
+                "task_complete": task_complete
+            })
+            self._response_sent = True
+            logger.info(f"Response sent to session {self.connection.session_id}")
+        else:
+            logger.debug(f"Duplicate response blocked for session {self.connection.session_id}")
 
     async def on_execution_step(self, step: dict):
         """Called after each execution step"""
@@ -276,11 +292,16 @@ class StreamingCallback:
 
     async def on_task_complete(self, message: str, final_phase: str, total_iterations: int):
         """Called when task is complete"""
-        await self.connection.send_message(MessageType.TASK_COMPLETE, {
-            "message": message,
-            "final_phase": final_phase,
-            "total_iterations": total_iterations
-        })
+        if not self._task_complete_sent:
+            await self.connection.send_message(MessageType.TASK_COMPLETE, {
+                "message": message,
+                "final_phase": final_phase,
+                "total_iterations": total_iterations
+            })
+            self._task_complete_sent = True
+            logger.info(f"Task complete sent to session {self.connection.session_id}")
+        else:
+            logger.debug(f"Duplicate task_complete blocked for session {self.connection.session_id}")
 
 
 # =============================================================================

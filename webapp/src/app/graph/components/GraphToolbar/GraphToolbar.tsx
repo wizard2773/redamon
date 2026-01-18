@@ -61,12 +61,12 @@ export function GraphToolbar({
       <button
         className={`${styles.aiButton} ${isAIOpen ? styles.aiButtonActive : ''}`}
         onClick={onToggleAI}
-        aria-label="Toggle AI Assistant"
+        aria-label="Toggle RedAmon Agent"
         aria-expanded={isAIOpen}
-        title="AI Assistant"
+        title="RedAmon Agent"
       >
         <Sparkles size={14} />
-        <span>AI Assistant</span>
+        <span>RedAmon Agent</span>
       </button>
     </div>
   )
