@@ -15,6 +15,7 @@ Usage:
     docker compose --profile scanner up python-scanner
 """
 
+import os
 import sys
 import json
 from pathlib import Path
@@ -24,15 +25,15 @@ from datetime import datetime
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from params import (
-    TARGET_DOMAIN,
-    PROJECT_ID,
-    GVM_SCAN_TARGETS,
-    GVM_CLEANUP_AFTER_SCAN,
-    USE_RECON_FOR_TARGET,
-    GVM_IP_LIST,
-    GVM_HOSTNAME_LIST,
-)
+# Runtime parameters from environment variables (set by orchestrator)
+PROJECT_ID = os.environ.get("PROJECT_ID", "")
+TARGET_DOMAIN = os.environ.get("TARGET_DOMAIN", "")
+
+# GVM project settings (fetched from webapp API or defaults)
+try:
+    from gvm_scan.project_settings import get_setting, load_project_settings
+except ImportError:
+    from project_settings import get_setting, load_project_settings
 
 from gvm_scan.gvm_scanner import (
     GVMScanner,
@@ -108,8 +109,6 @@ def check_recon_has_live_targets(recon_data: dict) -> tuple:
 def run_vulnerability_scan(
     domain: str = TARGET_DOMAIN,
     project_id: str = PROJECT_ID,
-    scan_targets: str = GVM_SCAN_TARGETS,
-    cleanup: bool = GVM_CLEANUP_AFTER_SCAN,
 ) -> dict:
     """
     Run vulnerability scan against targets from recon data.
@@ -117,18 +116,19 @@ def run_vulnerability_scan(
     Args:
         domain: Target domain for display purposes
         project_id: Project ID (reads from recon_<project_id>.json)
-        scan_targets: "both", "ips_only", or "hostnames_only"
-        cleanup: Delete targets/tasks after scan
 
     Returns:
         Complete vulnerability scan results
     """
+    # Read scan settings from project settings (fetched from webapp API)
+    scan_targets = get_setting('SCAN_TARGETS', 'both')
+    cleanup = get_setting('CLEANUP_AFTER_SCAN', True)
+
     print("\n" + "=" * 70)
     print("           RedAmon - GVM Vulnerability Scanner")
     print("=" * 70)
     print(f"  Target Domain: {domain}")
     print(f"  Scan Strategy: {scan_targets}")
-    print(f"  Use Recon Data: {USE_RECON_FOR_TARGET}")
     print(f"  Cleanup After: {cleanup}")
     print("=" * 70 + "\n")
 
@@ -138,60 +138,48 @@ def run_vulnerability_scan(
         print("[!] Install with: pip install python-gvm")
         return {"error": "python-gvm not installed"}
 
-    # Get targets based on USE_RECON_FOR_TARGET setting
+    # Load recon data (required - GVM scan always uses recon output)
     root_domain = domain  # Default to input domain
 
-    if USE_RECON_FOR_TARGET:
-        # Load recon data
-        print("[*] Loading recon data...")
-        try:
-            recon_data = load_recon_file(project_id)
-            # Get root_domain from recon metadata (consistent with recon/main.py)
-            root_domain = recon_data.get("metadata", {}).get("root_domain", domain)
-            print(f"    [+] Loaded: recon_{project_id}.json")
-            print(f"    [+] Root domain: {root_domain}")
-        except FileNotFoundError as e:
-            print(f"[!] ERROR: {e}")
-            print(f"[!] Run domain recon first: python recon/main.py")
-            return {"error": str(e)}
+    print("[*] Loading recon data...")
+    try:
+        recon_data = load_recon_file(project_id)
+        # Get root_domain from recon metadata (consistent with recon/main.py)
+        root_domain = recon_data.get("metadata", {}).get("root_domain", domain)
+        print(f"    [+] Loaded: recon_{project_id}.json")
+        print(f"    [+] Root domain: {root_domain}")
+    except FileNotFoundError as e:
+        print(f"[!] ERROR: {e}")
+        print(f"[!] Run domain recon first: python recon/main.py")
+        return {"error": str(e)}
 
-        # Check if recon data indicates reachable targets
-        has_live_targets, warning_message = check_recon_has_live_targets(recon_data)
-        
-        if not has_live_targets:
-            print(f"\n{'=' * 70}")
-            print(f"[!] SKIPPING GVM SCAN: {warning_message}")
-            print(f"{'=' * 70}")
-            return {
-                "error": "No live targets",
-                "reason": warning_message,
-                "skipped": True,
-                "metadata": {
-                    "scan_type": "vulnerability_scan",
-                    "scan_timestamp": datetime.now().isoformat(),
-                    "target_domain": root_domain,
-                    "skipped_reason": warning_message
-                }
+    # Check if recon data indicates reachable targets
+    has_live_targets, warning_message = check_recon_has_live_targets(recon_data)
+
+    if not has_live_targets:
+        print(f"\n{'=' * 70}")
+        print(f"[!] SKIPPING GVM SCAN: {warning_message}")
+        print(f"{'=' * 70}")
+        return {
+            "error": "No live targets",
+            "reason": warning_message,
+            "skipped": True,
+            "metadata": {
+                "scan_type": "vulnerability_scan",
+                "scan_timestamp": datetime.now().isoformat(),
+                "target_domain": root_domain,
+                "skipped_reason": warning_message
             }
+        }
 
-        # Extract targets from recon
-        ips, hostnames = extract_targets_from_recon(recon_data)
-    else:
-        # Use manual target lists from params
-        print("[*] Using manual target lists from params.py...")
-        ips = set(GVM_IP_LIST)
-        hostnames = set(GVM_HOSTNAME_LIST)
-        print(f"    [+] GVM_IP_LIST: {len(ips)} IPs")
-        print(f"    [+] GVM_HOSTNAME_LIST: {len(hostnames)} hostnames")
+    # Extract targets from recon
+    ips, hostnames = extract_targets_from_recon(recon_data)
 
     print(f"    [+] Found {len(ips)} unique IPs")
     print(f"    [+] Found {len(hostnames)} unique hostnames")
 
     if not ips and not hostnames:
-        if USE_RECON_FOR_TARGET:
-            print("[!] No targets found in recon data")
-        else:
-            print("[!] No targets specified in GVM_IP_LIST or GVM_HOSTNAME_LIST")
+        print("[!] No targets found in recon data")
         return {"error": "No targets found"}
 
     # Initialize results structure (use root_domain from recon metadata)
@@ -201,9 +189,7 @@ def run_vulnerability_scan(
             "scan_timestamp": datetime.now().isoformat(),
             "target_domain": root_domain,
             "scan_strategy": scan_targets,
-            "use_recon_for_target": USE_RECON_FOR_TARGET,
-            "target_source": "recon_data" if USE_RECON_FOR_TARGET else "manual_lists",
-            "recon_file": f"recon_{project_id}.json" if USE_RECON_FOR_TARGET else None,
+            "recon_file": f"recon_{project_id}.json",
             "targets": {
                 "ips": list(ips),
                 "hostnames": list(hostnames)
@@ -304,7 +290,7 @@ def run_vulnerability_scan(
                 print(f"    [+] Progress saved to {output_file}")
         
         # Final save
-        save_vuln_results(results, domain)
+        save_vuln_results(results, project_id)
         
     finally:
         scanner.disconnect()
@@ -334,15 +320,21 @@ def run_vulnerability_scan(
 
 def main():
     """Main entry point."""
-    
+
+    if not PROJECT_ID:
+        print("[!] ERROR: PROJECT_ID environment variable not set")
+        return 1
+
+    # Load per-project settings from webapp API (or use defaults)
+    load_project_settings(PROJECT_ID)
+
     # Run the scan
     start_time = datetime.now()
-    
+
     try:
         results = run_vulnerability_scan(
             domain=TARGET_DOMAIN,
-            scan_targets=GVM_SCAN_TARGETS,
-            cleanup=GVM_CLEANUP_AFTER_SCAN,
+            project_id=PROJECT_ID,
         )
         
         if "error" in results:

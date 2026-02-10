@@ -10,8 +10,9 @@ import { PageBottomBar } from './components/PageBottomBar'
 import { ReconConfirmModal } from './components/ReconConfirmModal'
 import { ReconLogsDrawer } from './components/ReconLogsDrawer'
 import { useGraphData, useDimensions, useNodeSelection } from './hooks'
-import { useTheme, useSession, useReconStatus, useReconSSE } from '@/hooks'
+import { useTheme, useSession, useReconStatus, useReconSSE, useGvmStatus, useGvmSSE } from '@/hooks'
 import { useProject } from '@/providers/ProjectProvider'
+import { GVM_PHASES } from '@/lib/recon-types'
 import styles from './page.module.css'
 
 export default function GraphPage() {
@@ -23,7 +24,9 @@ export default function GraphPage() {
   const [isAIOpen, setIsAIOpen] = useState(false)
   const [isReconModalOpen, setIsReconModalOpen] = useState(false)
   const [isLogsOpen, setIsLogsOpen] = useState(false)
+  const [isGvmLogsOpen, setIsGvmLogsOpen] = useState(false)
   const [hasReconData, setHasReconData] = useState(false)
+  const [hasGvmData, setHasGvmData] = useState(false)
   const [graphStats, setGraphStats] = useState<{ totalNodes: number; nodesByType: Record<string, number> } | null>(null)
   const contentRef = useRef<HTMLDivElement>(null)
 
@@ -61,6 +64,29 @@ export default function GraphPage() {
     enabled: reconState?.status === 'running' || reconState?.status === 'starting',
   })
 
+  // GVM status hook
+  const {
+    state: gvmState,
+    isLoading: isGvmLoading,
+    startGvm,
+  } = useGvmStatus({
+    projectId,
+    enabled: !!projectId,
+  })
+
+  const isGvmRunning = gvmState?.status === 'running' || gvmState?.status === 'starting'
+
+  // GVM logs SSE hook
+  const {
+    logs: gvmLogs,
+    currentPhase: gvmCurrentPhase,
+    currentPhaseNumber: gvmCurrentPhaseNumber,
+    clearLogs: clearGvmLogs,
+  } = useGvmSSE({
+    projectId,
+    enabled: gvmState?.status === 'running' || gvmState?.status === 'starting',
+  })
+
   // Check if recon data exists
   const checkReconData = useCallback(async () => {
     if (!projectId) return
@@ -89,10 +115,22 @@ export default function GraphPage() {
     }
   }, [data])
 
-  // Check for recon data on mount and when project changes
+  // Check if GVM data exists
+  const checkGvmData = useCallback(async () => {
+    if (!projectId) return
+    try {
+      const response = await fetch(`/api/gvm/${projectId}/download`, { method: 'HEAD' })
+      setHasGvmData(response.ok)
+    } catch {
+      setHasGvmData(false)
+    }
+  }, [projectId])
+
+  // Check for recon/GVM data on mount and when project changes
   useEffect(() => {
     checkReconData()
-  }, [checkReconData])
+    checkGvmData()
+  }, [checkReconData, checkGvmData])
 
   // Refresh graph data when recon completes
   useEffect(() => {
@@ -102,12 +140,29 @@ export default function GraphPage() {
     }
   }, [reconState?.status, refetchGraph, checkReconData])
 
+  // Refresh graph when GVM scan completes
+  useEffect(() => {
+    if (gvmState?.status === 'completed' || gvmState?.status === 'error') {
+      refetchGraph()
+      checkGvmData()
+    }
+  }, [gvmState?.status, refetchGraph, checkGvmData])
+
   // Auto-open logs when recon starts
   useEffect(() => {
     if (reconState?.status === 'running' || reconState?.status === 'starting') {
       setIsLogsOpen(true)
+      setIsGvmLogsOpen(false)
     }
   }, [reconState?.status])
+
+  // Auto-open GVM logs when GVM scan starts
+  useEffect(() => {
+    if (gvmState?.status === 'running' || gvmState?.status === 'starting') {
+      setIsGvmLogsOpen(true)
+      setIsLogsOpen(false)
+    }
+  }, [gvmState?.status])
 
   const handleToggleAI = useCallback(() => {
     setIsAIOpen((prev) => !prev)
@@ -152,6 +207,24 @@ export default function GraphPage() {
     setIsLogsOpen(prev => !prev)
   }, [])
 
+  const handleStartGvm = useCallback(async () => {
+    clearGvmLogs()
+    const result = await startGvm()
+    if (result) {
+      setIsGvmLogsOpen(true)
+      setIsLogsOpen(false)
+    }
+  }, [startGvm, clearGvmLogs])
+
+  const handleDownloadGvmJSON = useCallback(async () => {
+    if (!projectId) return
+    window.open(`/api/gvm/${projectId}/download`, '_blank')
+  }, [projectId])
+
+  const handleToggleGvmLogs = useCallback(() => {
+    setIsGvmLogsOpen(prev => !prev)
+  }, [])
+
   // Show message if no project is selected
   if (!projectLoading && !projectId) {
     return (
@@ -187,6 +260,13 @@ export default function GraphPage() {
         reconStatus={reconState?.status || 'idle'}
         hasReconData={hasReconData}
         isLogsOpen={isLogsOpen}
+        // GVM props
+        onStartGvm={handleStartGvm}
+        onDownloadGvmJSON={handleDownloadGvmJSON}
+        onToggleGvmLogs={handleToggleGvmLogs}
+        gvmStatus={gvmState?.status || 'idle'}
+        hasGvmData={hasGvmData}
+        isGvmLogsOpen={isGvmLogsOpen}
       />
 
       <div className={styles.body}>
@@ -220,6 +300,19 @@ export default function GraphPage() {
             currentPhaseNumber={currentPhaseNumber}
             status={reconState?.status || 'idle'}
             onClearLogs={clearLogs}
+          />
+
+          <ReconLogsDrawer
+            isOpen={isGvmLogsOpen}
+            onClose={() => setIsGvmLogsOpen(false)}
+            logs={gvmLogs}
+            currentPhase={gvmCurrentPhase}
+            currentPhaseNumber={gvmCurrentPhaseNumber}
+            status={gvmState?.status || 'idle'}
+            onClearLogs={clearGvmLogs}
+            title="GVM Vulnerability Scan Logs"
+            phases={GVM_PHASES}
+            totalPhases={4}
           />
         </div>
       </div>

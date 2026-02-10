@@ -20,6 +20,10 @@ from models import (
     ReconStartRequest,
     ReconState,
     ReconStatus,
+    GvmLogEvent,
+    GvmStartRequest,
+    GvmState,
+    GvmStatus,
 )
 
 # Configure logging
@@ -32,6 +36,8 @@ logger = logging.getLogger(__name__)
 # Configuration
 RECON_PATH = os.getenv("RECON_PATH", "/home/samuele/Progetti didattici/RedAmon/recon")
 RECON_IMAGE = os.getenv("RECON_IMAGE", "redamon-recon:latest")
+GVM_SCAN_PATH = os.getenv("GVM_SCAN_PATH", "/home/samuele/Progetti didattici/RedAmon/gvm_scan")
+GVM_IMAGE = os.getenv("GVM_IMAGE", "redamon-vuln-scanner:latest")
 VERSION = "1.0.0"
 
 # Global container manager
@@ -43,7 +49,7 @@ async def lifespan(app: FastAPI):
     """Initialize and cleanup resources"""
     global container_manager
     logger.info("Starting Recon Orchestrator...")
-    container_manager = ContainerManager(recon_image=RECON_IMAGE)
+    container_manager = ContainerManager(recon_image=RECON_IMAGE, gvm_image=GVM_IMAGE)
     yield
     logger.info("Shutting down Recon Orchestrator...")
     await container_manager.cleanup()
@@ -73,6 +79,7 @@ async def health_check():
         status="healthy",
         version=VERSION,
         running_recons=container_manager.get_running_count() if container_manager else 0,
+        running_gvm_scans=container_manager.get_gvm_running_count() if container_manager else 0,
     )
 
 
@@ -113,6 +120,26 @@ async def get_defaults():
             for k, v in DEFAULT_SETTINGS.items()
             if k not in RUNTIME_ONLY_KEYS
         }
+
+        # Also import GVM scan defaults (use importlib to avoid module name collision
+        # with recon's project_settings already cached above)
+        try:
+            import importlib.util
+            gvm_settings_path = Path("/app/gvm_scan/project_settings.py")
+            spec = importlib.util.spec_from_file_location("gvm_project_settings", gvm_settings_path)
+            gvm_mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(gvm_mod)
+
+            # Convert SCAN_CONFIG → gvmScanConfig (prefix with 'gvm_')
+            def to_gvm_camel(snake_str: str) -> str:
+                prefixed = f"gvm_{snake_str}"
+                components = prefixed.lower().split('_')
+                return components[0] + ''.join(x.title() for x in components[1:])
+
+            gvm_defaults = {to_gvm_camel(k): v for k, v in gvm_mod.DEFAULT_GVM_SETTINGS.items()}
+            camel_case_defaults.update(gvm_defaults)
+        except Exception:
+            logger.warning("GVM project_settings not found, skipping GVM defaults")
 
         return camel_case_defaults
     except ImportError as e:
@@ -279,6 +306,111 @@ async def delete_recon_data(project_id: str):
         "deleted": deleted_files,
         "errors": errors,
     }
+
+
+# =============================================================================
+# GVM Vulnerability Scan Endpoints
+# =============================================================================
+
+
+@app.post("/gvm/{project_id}/start", response_model=GvmState)
+async def start_gvm_scan(project_id: str, request: GvmStartRequest):
+    """
+    Start a GVM vulnerability scan for a project.
+
+    Requires recon data to already exist for target extraction.
+    """
+    if not container_manager:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    # Check that recon data exists
+    from pathlib import Path
+    recon_file = Path("/app/recon/output") / f"recon_{project_id}.json"
+    if not recon_file.exists():
+        raise HTTPException(
+            status_code=400,
+            detail="Recon data required. Run reconnaissance first.",
+        )
+
+    try:
+        state = await container_manager.start_gvm_scan(
+            project_id=project_id,
+            user_id=request.user_id,
+            webapp_api_url=request.webapp_api_url,
+            recon_path=RECON_PATH,
+            gvm_scan_path=GVM_SCAN_PATH,
+        )
+        return state
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error starting GVM scan: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/gvm/{project_id}/status", response_model=GvmState)
+async def get_gvm_status(project_id: str):
+    """Get current status of a GVM scan process"""
+    if not container_manager:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    return await container_manager.get_gvm_status(project_id)
+
+
+@app.post("/gvm/{project_id}/stop", response_model=GvmState)
+async def stop_gvm_scan(project_id: str):
+    """Stop a running GVM scan process"""
+    if not container_manager:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    state = await container_manager.stop_gvm_scan(project_id)
+    return state
+
+
+@app.get("/gvm/{project_id}/logs")
+async def stream_gvm_logs(project_id: str):
+    """
+    Stream logs from a GVM scanner container using Server-Sent Events.
+    """
+    if not container_manager:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    state = await container_manager.get_gvm_status(project_id)
+    if state.status == GvmStatus.IDLE:
+        raise HTTPException(status_code=404, detail="No GVM scan found for this project")
+
+    async def event_generator():
+        try:
+            async for event in container_manager.stream_gvm_logs(project_id):
+                yield {
+                    "event": "log",
+                    "data": json.dumps({
+                        "log": event.log,
+                        "timestamp": event.timestamp.isoformat(),
+                        "phase": event.phase,
+                        "phaseNumber": event.phase_number,
+                        "isPhaseStart": event.is_phase_start,
+                        "level": event.level,
+                    }),
+                }
+        except Exception as e:
+            logger.error(f"Error streaming GVM logs: {e}")
+            yield {
+                "event": "error",
+                "data": json.dumps({"error": str(e)}),
+            }
+
+        final_state = await container_manager.get_gvm_status(project_id)
+        yield {
+            "event": "complete",
+            "data": json.dumps({
+                "status": final_state.status.value,
+                "completedAt": final_state.completed_at.isoformat() if final_state.completed_at else None,
+                "error": final_state.error,
+            }),
+        }
+
+    return EventSourceResponse(event_generator())
 
 
 if __name__ == "__main__":

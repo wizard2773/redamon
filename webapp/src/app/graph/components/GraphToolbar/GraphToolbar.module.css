@@ -307,6 +307,37 @@
   cursor: not-allowed;
 }
 
+/* GVM Scan Button */
+.gvmButton {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  padding: var(--space-1) var(--space-2-5);
+  background: transparent;
+  border: 1px solid var(--status-warning);
+  border-radius: var(--radius-md);
+  color: var(--status-warning);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  transition: var(--transition-all);
+}
+
+.gvmButton:hover:not(:disabled) {
+  background: var(--status-warning);
+  color: white;
+}
+
+.gvmButton:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.gvmButtonActive {
+  background: var(--status-warning);
+  color: white;
+}
+
 .spinner {
   animation: spin 1s linear infinite;
 }

@@ -41,3 +41,30 @@ export const RECON_PHASES = [
 ] as const
 
 export type ReconPhase = typeof RECON_PHASES[number]
+
+// =============================================================================
+// GVM Vulnerability Scan Types
+// =============================================================================
+
+export type GvmStatus = 'idle' | 'starting' | 'running' | 'completed' | 'error' | 'stopping'
+
+export interface GvmState {
+  project_id: string
+  status: GvmStatus
+  current_phase: string | null
+  phase_number: number | null
+  total_phases: number
+  started_at: string | null
+  completed_at: string | null
+  error: string | null
+  container_id?: string | null
+}
+
+export const GVM_PHASES = [
+  'Loading Recon Data',
+  'Connecting to GVM',
+  'Scanning IPs',
+  'Scanning Hostnames',
+] as const
+
+export type GvmPhase = typeof GVM_PHASES[number]

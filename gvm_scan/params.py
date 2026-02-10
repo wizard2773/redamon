@@ -1,25 +1,10 @@
 """
 GVM scan - Parameters
 """
-import os
-from pathlib import Path
-from dotenv import load_dotenv
-
-# Load environment variables from local .env file
-load_dotenv(Path(__file__).parent / ".env")
 
 # =============================================================================
 # GVM/OpenVAS Vulnerability Scanner Configuration
 # =============================================================================
-
-USE_RECON_FOR_TARGET=True
-GVM_IP_LIST=[]
-GVM_HOSTNAME_LIST=[]
-
-# GVM connection settings (for Docker deployment)
-GVM_SOCKET_PATH = "/run/gvmd/gvmd.sock"  # Unix socket path inside container
-GVM_USERNAME = "admin"
-GVM_PASSWORD = os.getenv("GVM_PASSWORD", "admin")  # Set in .env for security
 
 # Scan configuration preset:
 # - "Full and fast" - Comprehensive scan, good performance (recommended)

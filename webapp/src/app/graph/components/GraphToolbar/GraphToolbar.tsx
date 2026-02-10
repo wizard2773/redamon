@@ -1,9 +1,9 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { Sparkles, Play, Download, Loader2, Terminal, Settings } from 'lucide-react'
+import { Sparkles, Play, Download, Loader2, Terminal, Settings, Shield } from 'lucide-react'
 import { Toggle } from '@/components/ui'
-import type { ReconStatus } from '@/lib/recon-types'
+import type { ReconStatus, GvmStatus } from '@/lib/recon-types'
 import styles from './GraphToolbar.module.css'
 
 interface GraphToolbarProps {
@@ -24,6 +24,13 @@ interface GraphToolbarProps {
   reconStatus?: ReconStatus
   hasReconData?: boolean
   isLogsOpen?: boolean
+  // GVM props
+  onStartGvm?: () => void
+  onDownloadGvmJSON?: () => void
+  onToggleGvmLogs?: () => void
+  gvmStatus?: GvmStatus
+  hasGvmData?: boolean
+  isGvmLogsOpen?: boolean
 }
 
 export function GraphToolbar({
@@ -44,9 +51,17 @@ export function GraphToolbar({
   reconStatus = 'idle',
   hasReconData = false,
   isLogsOpen = false,
+  // GVM props
+  onStartGvm,
+  onDownloadGvmJSON,
+  onToggleGvmLogs,
+  gvmStatus = 'idle',
+  hasGvmData = false,
+  isGvmLogsOpen = false,
 }: GraphToolbarProps) {
   const router = useRouter()
   const isReconRunning = reconStatus === 'running' || reconStatus === 'starting'
+  const isGvmRunning = gvmStatus === 'running' || gvmStatus === 'starting'
 
   const handleOpenSettings = () => {
     if (projectId) {
@@ -133,6 +148,48 @@ export function GraphToolbar({
             onClick={onDownloadJSON}
             disabled={!hasReconData || isReconRunning}
             title={hasReconData ? 'Download Recon JSON' : 'No data available'}
+          >
+            <Download size={14} />
+          </button>
+
+          <div className={styles.divider} />
+
+          {/* GVM Scan Actions */}
+          <button
+            className={`${styles.gvmButton} ${isGvmRunning ? styles.gvmButtonActive : ''}`}
+            onClick={onStartGvm}
+            disabled={isGvmRunning || !hasReconData}
+            title={
+              !hasReconData
+                ? 'Run recon first'
+                : isGvmRunning
+                ? 'GVM scan in progress...'
+                : 'Start GVM Vulnerability Scan'
+            }
+          >
+            {isGvmRunning ? (
+              <Loader2 size={14} className={styles.spinner} />
+            ) : (
+              <Shield size={14} />
+            )}
+            <span>{isGvmRunning ? 'Scanning...' : 'GVM Scan'}</span>
+          </button>
+
+          {isGvmRunning && (
+            <button
+              className={`${styles.logsButton} ${isGvmLogsOpen ? styles.logsButtonActive : ''}`}
+              onClick={onToggleGvmLogs}
+              title="View GVM Logs"
+            >
+              <Terminal size={14} />
+            </button>
+          )}
+
+          <button
+            className={styles.downloadButton}
+            onClick={onDownloadGvmJSON}
+            disabled={!hasGvmData || isGvmRunning}
+            title={hasGvmData ? 'Download GVM JSON' : 'No GVM data available'}
           >
             <Download size={14} />
           </button>

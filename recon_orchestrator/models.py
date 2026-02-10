@@ -53,3 +53,50 @@ class HealthResponse(BaseModel):
     status: str
     version: str
     running_recons: int
+    running_gvm_scans: int = 0
+
+
+# =============================================================================
+# GVM Vulnerability Scan Models
+# =============================================================================
+
+
+class GvmStatus(str, Enum):
+    """Status of a GVM scan process"""
+    IDLE = "idle"
+    STARTING = "starting"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    ERROR = "error"
+    STOPPING = "stopping"
+
+
+class GvmStartRequest(BaseModel):
+    """Request to start a GVM scan"""
+    project_id: str
+    user_id: str
+    webapp_api_url: str
+
+
+class GvmState(BaseModel):
+    """Current state of a GVM scan process"""
+    project_id: str
+    status: GvmStatus
+    current_phase: Optional[str] = None
+    phase_number: Optional[int] = None
+    total_phases: int = 4
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    error: Optional[str] = None
+    container_id: Optional[str] = None
+
+
+class GvmLogEvent(BaseModel):
+    """A single log event from GVM scanner container"""
+    log: str
+    timestamp: datetime
+    phase: Optional[str] = None
+    phase_number: Optional[int] = None
+    is_phase_start: bool = False
+    is_phase_end: bool = False
+    level: str = "info"

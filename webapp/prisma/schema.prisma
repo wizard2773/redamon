@@ -241,6 +241,13 @@ model Project {
   securityCheckTimeout              Int     @default(10) @map("security_check_timeout")
   securityCheckMaxWorkers           Int     @default(10) @map("security_check_max_workers")
 
+  // ========== GVM VULNERABILITY SCAN ==========
+  gvmScanConfig                     String  @default("Full and fast") @map("gvm_scan_config")
+  gvmScanTargets                    String  @default("both") @map("gvm_scan_targets")
+  gvmTaskTimeout                    Int     @default(14400) @map("gvm_task_timeout")
+  gvmPollInterval                   Int     @default(30) @map("gvm_poll_interval")
+  gvmCleanupAfterScan               Boolean @default(true) @map("gvm_cleanup_after_scan")
+
   // ========== AGENT BEHAVIOUR ==========
   agentOpenaiModel                      String   @default("gpt-5.2") @map("agent_openai_model")
   agentInformationalSystemPrompt        String   @default("") @map("agent_informational_system_prompt")

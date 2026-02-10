@@ -12,7 +12,7 @@ services:
     build: !reset null
     image: node:22-alpine
     working_dir: /app
-    command: sh -c "npm install && npx prisma generate && npm run dev"
+    command: sh -c "npm install && npx prisma db push && npm run dev"
     volumes:
       - ./webapp:/app
       - webapp_node_modules:/app/node_modules

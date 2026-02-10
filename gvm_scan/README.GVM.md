@@ -30,12 +30,17 @@
 ### RedAmon Integration
 
 RedAmon uses GVM in **headless API mode** (no web GUI) to:
-- Consume reconnaissance data from Phase 1 (IPs, hostnames from recon)
-- Automatically create scan targets and tasks
-- Execute vulnerability scans via Python API
-- Output structured JSON results for further analysis
+- Consume reconnaissance data (IPs, hostnames from recon output)
+- Automatically create scan targets and tasks via the Python GMP API
+- Execute vulnerability scans and stream logs in real-time to the webapp
+- Save structured JSON results (`gvm_scan/output/gvm_{projectId}.json`)
+- Update the Neo4j graph with Vulnerability nodes (source="gvm"), CVE nodes, and relationships to IP/Subdomain nodes
 
-> **Note:** All Docker files (`docker-compose.yml`, `Dockerfile`) are located in the `gvm_scan/` directory. Run all `docker compose` commands from within that directory.
+**Webapp integration:** GVM scans are triggered from the Graph page via a dedicated "GVM Scan" button. The button is only enabled when recon data exists for the project. Logs stream in real-time to a log drawer with 4-phase progress (Loading Recon Data → Connecting to GVM → Scanning IPs → Scanning Hostnames). Results can be downloaded as JSON from the toolbar.
+
+**Architecture:** The scan flow mirrors the recon pipeline: Webapp API → Recon Orchestrator → Docker container (`redamon-vuln-scanner`) → SSE log streaming → graph update.
+
+> **Note:** The GVM infrastructure (`docker-compose.yml` for gvmd, ospd-openvas, redis, pg-gvm, etc.) is located in the `gvm_scan/` directory and runs separately. The Python scanner container is built and managed by the main `docker-compose.yml` at the project root.
 
 ---
 
@@ -79,7 +84,7 @@ RedAmon uses GVM in **headless API mode** (no web GUI) to:
 │            ▼                                                                        │
 │   ┌─────────────────┐                                                               │
 │   │   JSON OUTPUT   │  Structured vulnerability report                              │
-│   │                 │  └── gvm_scan/output/vuln_*.json                              │
+│   │                 │  └── gvm_scan/output/gvm_*.json                              │
 │   └─────────────────┘                                                               │
 │                                                                                     │
 └─────────────────────────────────────────────────────────────────────────────────────┘
@@ -472,7 +477,7 @@ These containers download vulnerability data and exit immediately. They populate
    ┌────────────────┐
    │ gvm_scan/      │
    │ output/        │
-   │ vuln_*.json    │
+   │ gvm_*.json    │
    └────────────────┘
 ```
 
@@ -512,49 +517,42 @@ Example: `202512240705` = December 24, 2025 at 07:05 UTC
 
 ## Configuration Parameters
 
-### params.py Settings
+### Per-Project Settings (Webapp UI)
 
-```python
-# =============================================================================
-# GVM/OpenVAS Vulnerability Scanner Configuration
-# =============================================================================
+GVM scan settings are configurable per-project via the webapp Project Settings UI ("GVM Scan" tab). Settings are stored in PostgreSQL and fetched at runtime by the scanner container via the webapp API.
 
-# GVM connection settings (for Docker deployment)
-GVM_SOCKET_PATH = "/run/gvmd/gvmd.sock"  # Unix socket path inside container
-GVM_USERNAME = "admin"
-GVM_PASSWORD = os.getenv("GVM_PASSWORD", "admin")  # Set in .env for security
+The settings flow mirrors the recon and agentic modules:
 
-# Scan configuration preset (see Scan Configurations section)
-GVM_SCAN_CONFIG = "Full and fast"
-
-# Scan targets strategy:
-# - "both" - Scan IPs and hostnames separately for thorough coverage
-# - "ips_only" - Only scan IP addresses
-# - "hostnames_only" - Only scan hostnames/subdomains
-GVM_SCAN_TARGETS = "both"
-
-# Maximum time to wait for a single scan task (seconds, 0 = unlimited)
-GVM_TASK_TIMEOUT = 7200  # 2 hours
-
-# Poll interval for checking scan status (seconds)
-GVM_POLL_INTERVAL = 30
-
-# Cleanup targets and tasks after scan completion
-GVM_CLEANUP_AFTER_SCAN = True
+```
+Webapp UI → PostgreSQL (Prisma) → /api/projects/{id} → gvm_scan/project_settings.py → scanner
 ```
 
-### Parameter Details
+| Setting | DB Column | Type | Default | Description |
+|---------|-----------|------|---------|-------------|
+| Scan Profile | `gvm_scan_config` | String | `Full and fast` | GVM scan configuration preset (see Scan Configurations section) |
+| Scan Targets Strategy | `gvm_scan_targets` | String | `both` | What to scan: `both`, `ips_only`, `hostnames_only` |
+| Task Timeout | `gvm_task_timeout` | Int | `14400` | Max seconds per scan task (0 = unlimited) |
+| Poll Interval | `gvm_poll_interval` | Int | `30` | Seconds between scan status checks |
+| Cleanup After Scan | `gvm_cleanup_after_scan` | Boolean | `true` | Delete GVM targets/tasks after scan completion |
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `GVM_SOCKET_PATH` | str | `/run/gvmd/gvmd.sock` | Path to GVMD Unix socket |
-| `GVM_USERNAME` | str | `admin` | GVM authentication username |
-| `GVM_PASSWORD` | str | `admin` | GVM authentication password (use .env) |
-| `GVM_SCAN_CONFIG` | str | `Full and fast` | Scan profile to use |
-| `GVM_SCAN_TARGETS` | str | `both` | What to scan: `both`, `ips_only`, `hostnames_only` |
-| `GVM_TASK_TIMEOUT` | int | `7200` | Max seconds per scan task (0 = unlimited) |
-| `GVM_POLL_INTERVAL` | int | `30` | Seconds between status checks |
-| `GVM_CLEANUP_AFTER_SCAN` | bool | `True` | Delete targets/tasks after completion |
+Default values are defined in `gvm_scan/project_settings.py` (`DEFAULT_GVM_SETTINGS`) and served to the frontend via the orchestrator `/defaults` endpoint.
+
+### Environment Variables (Connection & Runtime)
+
+GVM connection settings and runtime parameters are passed as environment variables by the orchestrator when starting the scanner container:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PROJECT_ID` | — | Project identifier (set by orchestrator) |
+| `USER_ID` | — | User identifier (set by orchestrator) |
+| `TARGET_DOMAIN` | — | Target domain (set by orchestrator) |
+| `WEBAPP_API_URL` | — | Webapp URL for fetching per-project settings (set by orchestrator) |
+| `GVM_SOCKET_PATH` | `/run/gvmd/gvmd.sock` | Path to GVMD Unix socket |
+| `GVM_USERNAME` | `admin` | GVM authentication username |
+| `GVM_PASSWORD` | `admin` | GVM authentication password |
+| `NEO4J_URI` | `bolt://localhost:7687` | Neo4j connection URI |
+| `NEO4J_USER` | `neo4j` | Neo4j username |
+| `NEO4J_PASSWORD` | — | Neo4j password |
 
 ---
 
@@ -598,13 +596,10 @@ Each scan config defines:
 ```python
 from gvm_scan.gvm_scanner import GVMScanner
 
-# Initialize
+# Initialize (reads GVM_SOCKET_PATH, GVM_USERNAME, GVM_PASSWORD from env)
 scanner = GVMScanner(
-    socket_path="/run/gvmd/gvmd.sock",
-    username="admin",
-    password="admin",
     scan_config="Full and fast",
-    task_timeout=7200,
+    task_timeout=14400,
     poll_interval=30
 )
 
@@ -646,8 +641,7 @@ scanner.disconnect()
 | `create_task(name, target_id)` | Create scan task | `task_id` |
 | `start_task(task_id)` | Start scanning | `report_id` |
 | `wait_for_task(task_id)` | Wait for completion | `(status, report_id)` |
-| `get_report(report_id)` | Fetch raw report | `XML Element` |
-| `parse_report(report)` | Parse to dict | `List[Dict]` |
+| `get_report(report_id)` | Fetch and parse report | `Dict` (with vulnerabilities, summary, raw_data) |
 | `delete_target(target_id)` | Remove target | `None` |
 | `delete_task(task_id)` | Remove task | `None` |
 
@@ -664,7 +658,7 @@ scanner.disconnect()
     "scan_timestamp": "2025-12-28T17:00:00.000000",
     "target_domain": "example.com",
     "scan_strategy": "both",
-    "recon_file": "recon_example.com.json",
+    "recon_file": "recon_{projectId}.json",
     "targets": {
       "ips": ["192.168.1.1", "192.168.1.2"],
       "hostnames": ["www.example.com", "mail.example.com"]
@@ -1005,48 +999,80 @@ Unauthorized vulnerability scanning may violate:
 ## File Structure
 
 ```
-RedAmon/
-├── params.py                   # Configuration parameters
-├── .env                        # Secrets (GVM_PASSWORD)
+redamon/
+├── .env                              # Secrets (GVM_PASSWORD, NEO4J_PASSWORD, etc.)
+├── docker-compose.yml                # Main stack (includes vuln-scanner build target)
 │
 ├── gvm_scan/
-│   ├── docker-compose.yml      # Container orchestration
-│   ├── Dockerfile              # Python scanner image
-│   ├── __init__.py             # Package marker
-│   ├── main.py                 # Entry point
-│   ├── gvm_scanner.py          # GVM API wrapper
-│   ├── requirements.txt        # Python dependencies
+│   ├── docker-compose.yml            # GVM infrastructure (gvmd, ospd-openvas, redis, pg-gvm)
+│   ├── Dockerfile                    # Python scanner image (redamon-vuln-scanner)
+│   ├── project_settings.py           # Per-project settings (fetched from webapp API)
+│   ├── __init__.py                   # Package marker
+│   ├── main.py                       # Entry point (reads PROJECT_ID from env)
+│   ├── gvm_scanner.py                # GVM API wrapper (reads connection settings from env)
+│   ├── requirements.txt              # Python dependencies
+│   ├── README.GVM.md                 # This documentation
 │   └── output/
-│       └── vuln_*.json         # Scan results
+│       └── gvm_{projectId}.json      # Scan results per project
 │
-└── recon/
-    └── output/
-        └── recon_*.json        # Input from Phase 1
+├── recon/
+│   └── output/
+│       └── recon_{projectId}.json    # Input from recon pipeline
+│
+├── recon_orchestrator/
+│   ├── api.py                        # GVM endpoints: /gvm/{id}/start, status, stop, logs
+│   ├── container_manager.py          # GVM container lifecycle management
+│   └── models.py                     # GvmState, GvmStatus, GvmLogEvent models
+│
+├── webapp/
+│   ├── prisma/schema.prisma          # GVM fields: gvm_scan_config, gvm_scan_targets, etc.
+│   └── src/
+│       ├── app/api/gvm/[projectId]/  # API routes: start, status, logs, download
+│       ├── app/graph/page.tsx        # GVM state wiring, log drawer, toolbar buttons
+│       ├── components/projects/ProjectForm/sections/GvmScanSection.tsx  # GVM settings UI
+│       ├── hooks/useGvmStatus.ts     # GVM status polling hook
+│       ├── hooks/useGvmSSE.ts        # GVM SSE log streaming hook
+│       └── lib/recon-types.ts        # GvmStatus, GvmState, GVM_PHASES types
+│
+└── graph_db/
+    └── neo4j_client.py               # update_graph_from_gvm_scan() method
 ```
 
 ---
 
 ## Quick Reference
 
-### Start System
+### Start GVM Infrastructure
 ```bash
 cd gvm_scan
 docker compose up -d
-docker compose logs -f gvmd  # Wait for VT sync
+docker compose logs -f gvmd  # Wait for VT sync ("Updating VTs in database ... done")
 ```
 
-### Run Scan
+### Build Scanner Image (from project root)
 ```bash
-cd gvm_scan
-docker compose --profile scanner up python-scanner
+docker compose --profile tools build vuln-scanner
+```
+
+### Run Scan via Webapp (Recommended)
+1. Ensure GVM infrastructure is running (`cd gvm_scan && docker compose up -d`)
+2. Ensure the main stack is running (`docker compose up -d`)
+3. Open http://localhost:3000, navigate to Graph page
+4. Run recon first (GVM requires recon data)
+5. Click "GVM Scan" button — logs stream in real-time
+
+### Run Scan via CLI (Development)
+```bash
+PROJECT_ID=your_project_id TARGET_DOMAIN=example.com \
+  python gvm_scan/main.py
 ```
 
 ### Check Results
 ```bash
-cat gvm_scan/output/vuln_*.json | jq '.summary'
+cat gvm_scan/output/gvm_{projectId}.json | jq '.summary'
 ```
 
-### Stop System
+### Stop GVM Infrastructure
 ```bash
 cd gvm_scan
 docker compose down

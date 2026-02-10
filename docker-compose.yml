@@ -71,6 +71,13 @@ services:
     image: redamon-recon:latest
     profiles: ["tools"]
 
+  vuln-scanner:
+    build:
+      context: .
+      dockerfile: gvm_scan/Dockerfile
+    image: redamon-vuln-scanner:latest
+    profiles: ["tools"]
+
   # ===========================================================================
   # Backend Services
   # ===========================================================================
@@ -85,14 +92,22 @@ services:
       - ./recon_orchestrator:/app
       - ./recon:/app/recon:ro
       - ./recon/output:/app/recon/output:rw
+      - ./gvm_scan:/app/gvm_scan:ro
+      - ./gvm_scan/output:/app/gvm_scan/output:rw
     environment:
       RECON_PATH: ${PWD}/recon
       RECON_IMAGE: redamon-recon:latest
+      GVM_SCAN_PATH: ${PWD}/gvm_scan
+      GVM_IMAGE: redamon-vuln-scanner:latest
       # Forwarded to spawned recon containers (host network, so localhost)
       NVD_API_KEY: ${NVD_API_KEY:-}
       NEO4J_URI: bolt://localhost:7687
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-changeme123}
+      # GVM connection settings (forwarded to spawned vuln-scanner containers)
+      GVM_SOCKET_PATH: /run/gvmd/gvmd.sock
+      GVM_USERNAME: admin
+      GVM_PASSWORD: ${GVM_PASSWORD:-admin}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8010/health"]
@@ -199,25 +214,6 @@ services:
   # Frontend
   # ===========================================================================
 
-  # One-time init: syncs Prisma schema to PostgreSQL, then exits
-  webapp-init:
-    image: node:22-alpine
-    working_dir: /app
-    command: >
-      sh -c "npm install prisma@6 --save-dev 2>&1 | tail -1 &&
-             npx prisma db push --skip-generate --schema ./prisma/schema.prisma"
-    volumes:
-      - ./webapp/prisma:/app/prisma
-      - webapp_prisma_cache:/app/node_modules
-    environment:
-      DATABASE_URL: "postgresql://${POSTGRES_USER:-redamon}:${POSTGRES_PASSWORD:-redamon_secret}@postgres:5432/${POSTGRES_DB:-redamon}"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - redamon
-    restart: "no"
-
   webapp:
     build: ./webapp
     container_name: redamon-webapp
@@ -241,8 +237,6 @@ services:
         condition: service_healthy
       neo4j:
         condition: service_healthy
-      webapp-init:
-        condition: service_completed_successfully
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/health"]
@@ -277,4 +271,3 @@ volumes:
   neo4j_logs:
   neo4j_import:
   neo4j_plugins:
-  webapp_prisma_cache:

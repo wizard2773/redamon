@@ -14,6 +14,9 @@ interface ReconLogsDrawerProps {
   currentPhaseNumber: number | null
   status: ReconStatus
   onClearLogs: () => void
+  title?: string
+  phases?: readonly string[]
+  totalPhases?: number
 }
 
 export function ReconLogsDrawer({
@@ -24,6 +27,9 @@ export function ReconLogsDrawer({
   currentPhaseNumber,
   status,
   onClearLogs,
+  title = 'Reconnaissance Logs',
+  phases = RECON_PHASES,
+  totalPhases = 7,
 }: ReconLogsDrawerProps) {
   const logsEndRef = useRef<HTMLDivElement>(null)
   const logsContainerRef = useRef<HTMLDivElement>(null)
@@ -64,7 +70,7 @@ export function ReconLogsDrawer({
         return 'Starting...'
       case 'running':
         return currentPhase
-          ? `Phase ${currentPhaseNumber}/7: ${currentPhase}`
+          ? `Phase ${currentPhaseNumber}/${totalPhases}: ${currentPhase}`
           : 'Running...'
       case 'completed':
         return 'Completed'
@@ -98,7 +104,7 @@ export function ReconLogsDrawer({
       <div className={styles.header}>
         <div className={styles.titleContainer}>
           <Terminal size={16} />
-          <span>Reconnaissance Logs</span>
+          <span>{title}</span>
         </div>
         <button
           className={styles.closeButton}
@@ -135,7 +141,7 @@ export function ReconLogsDrawer({
 
       {/* Phase progress */}
       <div className={styles.phaseProgress}>
-        {RECON_PHASES.map((phase, index) => {
+        {phases.map((phase, index) => {
           const phaseNum = index + 1
           const isActive = currentPhaseNumber === phaseNum
           const isCompleted = currentPhaseNumber !== null && phaseNum < currentPhaseNumber

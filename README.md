@@ -62,7 +62,7 @@ NVD_API_KEY=...                # NIST NVD API — higher rate limits for CVE loo
 ### 2. Build & Start
 
 ```bash
-# Build all images (including recon scanner)
+# Build all images (including recon and GVM vulnerability scanners)
 docker compose --profile tools build
 
 # Start all services
@@ -118,6 +118,16 @@ cd recon
 docker-compose build
 docker-compose run --rm recon python /app/recon/main.py
 ```
+
+### Running GVM Vulnerability Scan
+
+After reconnaissance completes, you can run a GVM network-level vulnerability scan:
+
+1. Ensure the GVM infrastructure is running (`cd gvm_scan && docker compose up -d`)
+2. Navigate to Graph page
+3. Click the "GVM Scan" button (enabled only when recon data exists for the project)
+4. Watch real-time logs in the GVM logs drawer
+5. Download the GVM results JSON when complete
 
 ### Development Mode
 
@@ -354,7 +364,7 @@ The graph contains **17 node types** organized into four categories:
 
 | Node | Key Properties | Description |
 |------|---------------|-------------|
-| **Vulnerability** | id, name, severity (lowercase), source (nuclei/gvm*/security_check), category, curl_command | Scanner finding with evidence (*GVM integration under development) |
+| **Vulnerability** | id, name, severity (lowercase), source (nuclei/gvm/security_check), category, curl_command | Scanner finding with evidence |
 | **CVE** | id, cvss, severity (uppercase), description, published | Known vulnerability from NVD |
 | **MitreData** | cve_id, cwe_id, cwe_name, abstraction | CWE weakness mapping |
 | **Capec** | capec_id, name, likelihood, severity, execution_flow | Common attack pattern |
@@ -389,7 +399,7 @@ Domain ──HAS_SUBDOMAIN──> Subdomain ──RESOLVES_TO──> IP ──HA
 
 Vulnerabilities connect differently depending on their source:
 - **Nuclei findings** (web application) → linked via `FOUND_AT` to the specific Endpoint and `AFFECTS_PARAMETER` to the vulnerable Parameter.
-- **GVM findings** (network level, *under development*) → will be linked via `HAS_VULNERABILITY` directly to the IP once GVM integration is complete.
+- **GVM findings** (network level) → linked via `HAS_VULNERABILITY` directly to the IP and Subdomain nodes, with associated CVE nodes.
 - **Security checks** (DNS/email/headers) → linked via `HAS_VULNERABILITY` to the Subdomain or Domain.
 
 #### How the Agent Uses the Graph
@@ -1025,14 +1035,13 @@ Next.js dashboard for visualization and AI interaction.
 
 ### 6. GVM Scanner
 
-> **Status: Under Development** — GVM integration is currently being built and is not yet available in the production stack.
-
 Greenbone Vulnerability Management (GVM), formerly known as OpenVAS, is an enterprise-grade network vulnerability scanner. Unlike Nuclei (which focuses on web application testing via HTTP templates), GVM performs deep network-level vulnerability assessment by probing services directly at the protocol layer — testing for misconfigurations, outdated software, default credentials, and known CVEs across every open port.
 
 - **170,000+ Network Vulnerability Tests (NVTs)** — the largest open-source vulnerability test feed, covering operating systems, network services, databases, and embedded devices.
 - **CVSS scoring and CVE mapping** — every finding includes a CVSS score, CVE references, and remediation guidance.
-- **Recon output integration** — will consume the IP addresses and open ports discovered by the recon pipeline, eliminating the need for redundant host discovery.
-- **Graph database linkage** — GVM findings will be stored as Vulnerability nodes in Neo4j, linked directly to IP nodes via `HAS_VULNERABILITY` relationships, complementing the web-layer findings from Nuclei.
+- **Recon output integration** — consumes the IP addresses and hostnames discovered by the recon pipeline, eliminating the need for redundant host discovery.
+- **Graph database linkage** — GVM findings are stored as Vulnerability nodes (source="gvm") in Neo4j, linked to IP and Subdomain nodes via `HAS_VULNERABILITY` relationships, with associated CVE nodes — complementing the web-layer findings from Nuclei.
+- **Webapp integration** — triggered from the Graph page via a dedicated "GVM Scan" button (requires prior recon data). Logs stream in real-time to a log drawer with 4-phase progress tracking, and results can be downloaded as JSON.
 
 📖 **[Read GVM Documentation](gvm_scan/README.GVM.md)**
 

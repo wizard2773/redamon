@@ -12,6 +12,7 @@ This module uses the Greenbone Management Protocol (GMP) to:
 """
 
 import json
+import os
 import time
 from pathlib import Path
 from datetime import datetime
@@ -31,17 +32,20 @@ except ImportError:
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from params import (
-    GVM_SOCKET_PATH,
-    GVM_USERNAME,
-    GVM_PASSWORD,
-    GVM_SCAN_CONFIG,
-    GVM_TASK_TIMEOUT,
-    GVM_POLL_INTERVAL,
-    GVM_CLEANUP_AFTER_SCAN,
-    USER_ID,
-    PROJECT_ID,
-)
+# GVM project settings (fetched from webapp API or defaults)
+try:
+    from gvm_scan.project_settings import get_setting
+except ImportError:
+    from project_settings import get_setting
+
+# Runtime parameters from environment variables (set by orchestrator)
+USER_ID = os.environ.get("USER_ID", "")
+PROJECT_ID = os.environ.get("PROJECT_ID", "")
+
+# GVM connection settings (from environment, set by orchestrator)
+GVM_SOCKET_PATH = os.environ.get("GVM_SOCKET_PATH", "/run/gvmd/gvmd.sock")
+GVM_USERNAME = os.environ.get("GVM_USERNAME", "admin")
+GVM_PASSWORD = os.environ.get("GVM_PASSWORD", "admin")
 
 # GVM imports (handled gracefully if not installed)
 try:
@@ -68,33 +72,33 @@ class GVMScanner:
     
     def __init__(
         self,
-        socket_path: str = GVM_SOCKET_PATH,
-        username: str = GVM_USERNAME,
-        password: str = GVM_PASSWORD,
-        scan_config: str = GVM_SCAN_CONFIG,
-        task_timeout: int = GVM_TASK_TIMEOUT,
-        poll_interval: int = GVM_POLL_INTERVAL,
+        socket_path: str = None,
+        username: str = None,
+        password: str = None,
+        scan_config: str = None,
+        task_timeout: int = None,
+        poll_interval: int = None,
     ):
         """
         Initialize GVM scanner.
-        
+
         Args:
-            socket_path: Path to gvmd Unix socket
-            username: GVM username
-            password: GVM password
-            scan_config: Name of scan configuration to use
-            task_timeout: Maximum time to wait for scan completion
-            poll_interval: Seconds between status checks
+            socket_path: Path to gvmd Unix socket (default: from env)
+            username: GVM username (default: from env)
+            password: GVM password (default: from env)
+            scan_config: Name of scan configuration to use (default: from project settings)
+            task_timeout: Maximum time to wait for scan completion (default: from project settings)
+            poll_interval: Seconds between status checks (default: from project settings)
         """
         if not GVM_AVAILABLE:
             raise RuntimeError("python-gvm library not installed")
-        
-        self.socket_path = socket_path
-        self.username = username
-        self.password = password
-        self.scan_config_name = scan_config
-        self.task_timeout = task_timeout
-        self.poll_interval = poll_interval
+
+        self.socket_path = socket_path or GVM_SOCKET_PATH
+        self.username = username or GVM_USERNAME
+        self.password = password or GVM_PASSWORD
+        self.scan_config_name = scan_config or get_setting('SCAN_CONFIG', 'Full and fast')
+        self.task_timeout = task_timeout if task_timeout is not None else get_setting('TASK_TIMEOUT', 14400)
+        self.poll_interval = poll_interval if poll_interval is not None else get_setting('POLL_INTERVAL', 30)
         
         # Connection state
         self._connection = None
@@ -669,7 +673,7 @@ class GVMScanner:
         self,
         targets: List[str],
         target_name: str,
-        cleanup: bool = GVM_CLEANUP_AFTER_SCAN
+        cleanup: Optional[bool] = None
     ) -> Dict:
         """
         Run a complete vulnerability scan on targets.
@@ -682,9 +686,12 @@ class GVMScanner:
         Returns:
             Scan results dictionary
         """
+        if cleanup is None:
+            cleanup = get_setting('CLEANUP_AFTER_SCAN', True)
+
         if not targets:
             return {"error": "No targets provided", "vulnerabilities": []}
-        
+
         print(f"\n[*] Scanning {len(targets)} targets: {target_name}")
         print(f"    Targets: {', '.join(targets[:5])}{'...' if len(targets) > 5 else ''}")
         

@@ -19,6 +19,7 @@ import { MitreSection } from './sections/MitreSection'
 import { SecurityChecksSection } from './sections/SecurityChecksSection'
 import { GithubSection } from './sections/GithubSection'
 import { AgentBehaviourSection } from './sections/AgentBehaviourSection'
+import { GvmScanSection } from './sections/GvmScanSection'
 
 type ProjectFormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -51,6 +52,7 @@ const TABS = [
   { id: 'vuln', label: 'Vulnerability Scanning' },
   { id: 'cve', label: 'CVE & MITRE' },
   { id: 'security', label: 'Security Checks' },
+  { id: 'gvm', label: 'GVM Scan' },
   { id: 'integrations', label: 'Integrations' },
   { id: 'agent', label: 'Agent Behaviour' },
 ] as const
@@ -307,6 +309,10 @@ export function ProjectForm({
 
         {activeTab === 'integrations' && (
           <GithubSection data={formData} updateField={updateField} />
+        )}
+
+        {activeTab === 'gvm' && (
+          <GvmScanSection data={formData} updateField={updateField} />
         )}
 
         {activeTab === 'agent' && (
