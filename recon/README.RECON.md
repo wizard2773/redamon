@@ -44,26 +44,22 @@ cd ../webapp && npm run dev
 # 3. Click "Start Recon" button
 ```
 
-### Option 2: CLI with params.py Defaults
+### Option 2: CLI with Environment Variables
 
 For standalone CLI usage without the webapp:
 
 ```bash
-# 1. Configure target in recon/params.py
-TARGET_DOMAIN = "testphp.vulnweb.com"    # Root domain to scan
-SUBDOMAIN_LIST = []                       # Empty = discover all subdomains
-
-# 2. Build the container (first time only)
+# 1. Build the container (first time only)
 cd recon/
 docker-compose build
 
-# 3. Run a scan (starts, executes, and removes container automatically)
-docker-compose run --rm recon python /app/recon/main.py
+# 2. Run a scan with target specified via environment variable
+TARGET_DOMAIN=testphp.vulnweb.com docker-compose run --rm recon python /app/recon/main.py
 ```
 
 ### Docker Environment Variables
 
-Override `params.py` settings via environment variables:
+Override default settings via environment variables:
 
 ```bash
 # Run with custom target
@@ -80,7 +76,6 @@ SCAN_MODULES="domain_discovery,port_scan,http_probe" docker-compose run --rm rec
 
 | Change Type | Action Required |
 |-------------|-----------------|
-| `params.py` changes | No rebuild needed (mounted as volume) |
 | Python code (*.py) changes | `docker-compose build` |
 | `requirements.txt` changes | `docker-compose build --no-cache` |
 | `Dockerfile` changes | `docker-compose build --no-cache` |
@@ -117,7 +112,7 @@ Settings are resolved in the following order of precedence:
    TARGET_DOMAIN=example.com docker-compose run --rm recon python /app/recon/main.py
    ```
 
-3. **params.py (Fallback)** - Default values for CLI usage without webapp
+3. **DEFAULT_SETTINGS (Fallback)** - Built-in defaults in `project_settings.py` for CLI usage without webapp
 
 ### project_settings.py
 
@@ -126,7 +121,7 @@ The `project_settings.py` module handles settings resolution:
 ```python
 from recon.project_settings import get_settings
 
-# Returns dict with all settings from API or params.py fallback
+# Returns dict with all settings from API or DEFAULT_SETTINGS fallback
 settings = get_settings()
 
 TARGET_DOMAIN = settings['TARGET_DOMAIN']
@@ -493,17 +488,17 @@ flowchart LR
 
 ### Configure Which Modules to Run
 
-Edit `params.py`:
+Configure via the webapp project settings or environment variables:
 
-```python
+```bash
 # Run all modules (recommended for full assessment)
-SCAN_MODULES = ["domain_discovery", "port_scan", "http_probe", "resource_enum", "vuln_scan", "github"]
+SCAN_MODULES="domain_discovery,port_scan,http_probe,resource_enum,vuln_scan"
 
 # Quick recon only (no vulnerability scanning)
-SCAN_MODULES = ["domain_discovery"]
+SCAN_MODULES="domain_discovery"
 
 # Port scan + HTTP probing (skip vulnerability scanning)
-SCAN_MODULES = ["domain_discovery", "port_scan", "http_probe"]
+SCAN_MODULES="domain_discovery,port_scan,http_probe"
 ```
 
 ### Module 1: `domain_discovery`
@@ -908,43 +903,22 @@ flowchart TB
 
 ## ⚙️ Key Configuration Parameters
 
-### Essential Settings (`params.py`)
+### Essential Settings
 
-```python
-# ═══════════════════════════════════════════════════════════════════
-# TARGET & MODULES
-# ═══════════════════════════════════════════════════════════════════
-TARGET_DOMAIN = "example.com"
-SUBDOMAIN_LIST = []                   # Empty = discover all
-SCAN_MODULES = ["domain_discovery", "port_scan", "http_probe", "vuln_scan"]
+All settings are managed through the webapp project form or via environment variables. Key defaults are defined in `project_settings.py`:
 
-# ═══════════════════════════════════════════════════════════════════
-# PORT SCAN
-# ═══════════════════════════════════════════════════════════════════
-NAABU_TOP_PORTS = "1000"
-NAABU_RATE_LIMIT = 1000
-NAABU_SCAN_TYPE = "s"                 # SYN scan
-
-# ═══════════════════════════════════════════════════════════════════
-# HTTP PROBE
-# ═══════════════════════════════════════════════════════════════════
-HTTPX_THREADS = 50
-HTTPX_PROBE_TECH_DETECT = True
-WAPPALYZER_ENABLED = True
-
-# ═══════════════════════════════════════════════════════════════════
-# VULNERABILITY SCAN
-# ═══════════════════════════════════════════════════════════════════
-NUCLEI_DAST_MODE = True
-NUCLEI_SEVERITY = ["critical", "high", "medium", "low"]
-NUCLEI_AUTO_UPDATE_TEMPLATES = True
-
-# ═══════════════════════════════════════════════════════════════════
-# MITRE ENRICHMENT
-# ═══════════════════════════════════════════════════════════════════
-MITRE_INCLUDE_CWE = True
-MITRE_INCLUDE_CAPEC = True
-```
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `TARGET_DOMAIN` | — | Root domain to scan |
+| `SUBDOMAIN_LIST` | `[]` | Empty = discover all |
+| `SCAN_MODULES` | all 5 modules | Modules to run |
+| `NAABU_TOP_PORTS` | `"1000"` | Top-N ports to scan |
+| `NAABU_SCAN_TYPE` | `"s"` | SYN scan |
+| `NUCLEI_DAST_MODE` | `true` | Active fuzzing |
+| `NUCLEI_SEVERITY` | critical, high, medium, low | Severity filter |
+| `WAPPALYZER_ENABLED` | `true` | Technology detection |
+| `MITRE_INCLUDE_CWE` | `true` | CWE enrichment |
+| `MITRE_INCLUDE_CAPEC` | `true` | CAPEC enrichment |
 
 ---
 
@@ -983,8 +957,7 @@ docker-compose run --rm recon python /app/recon/main.py
 recon/
 ├── Dockerfile              # Container build
 ├── docker-compose.yml      # Orchestration
-├── params.py               # 🎛️ Default configuration values
-├── project_settings.py     # 🔗 Settings fetcher (API or params.py)
+├── project_settings.py     # 🔗 Settings fetcher (API or built-in defaults)
 ├── main.py                 # 🚀 Entry point
 ├── domain_recon.py         # Subdomain discovery
 ├── whois_recon.py          # WHOIS lookup

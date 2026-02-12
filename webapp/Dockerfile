@@ -45,10 +45,12 @@ RUN chown nextjs:nodejs .next
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
-# Prisma CLI + schema for automatic migration on startup
-COPY --from=builder /app/node_modules/prisma ./node_modules/prisma
-COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
+# Prisma schema + CLI for automatic migration on startup
 COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/node_modules/prisma/package.json /tmp/prisma-pkg.json
+RUN PRISMA_VER=$(node -p "require('/tmp/prisma-pkg.json').version") && \
+    npm install --no-save "prisma@${PRISMA_VER}" && \
+    npm cache clean --force && rm /tmp/prisma-pkg.json
 
 # Entrypoint: sync schema to PostgreSQL, then start server
 RUN printf '#!/bin/sh\necho "Syncing Prisma schema..."\nnode node_modules/prisma/build/index.js db push --skip-generate --schema ./prisma/schema.prisma 2>&1\nexec node server.js\n' > /app/entrypoint.sh \

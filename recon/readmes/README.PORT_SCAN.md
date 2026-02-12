@@ -97,7 +97,7 @@ docker pull projectdiscovery/naabu:latest
 
 ## Configuration Parameters
 
-All parameters are defined in `params.py`:
+All parameters are configured via the webapp project settings (stored in PostgreSQL) or as defaults in `project_settings.py`:
 
 ### Docker Settings
 
@@ -556,7 +556,7 @@ docker run --rm \
 ### Basic Usage (via main.py)
 
 ```python
-# Include "naabu" in SCAN_MODULES in params.py
+# Include "port_scan" in SCAN_MODULES in project settings
 SCAN_MODULES = ["initial_recon", "naabu", "httpx", "nuclei"]
 
 # Run the full pipeline

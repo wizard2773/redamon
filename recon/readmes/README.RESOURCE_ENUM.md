@@ -131,7 +131,7 @@ docker pull projectdiscovery/httpx:latest  # For URL verification
 
 ## Configuration Parameters
 
-All parameters are defined in `params.py`.
+All parameters are configured via the webapp project settings (stored in PostgreSQL) or as defaults in `project_settings.py`.
 
 ---
 
@@ -952,7 +952,7 @@ Forms are merged into the endpoint structure:
 ### Basic Usage (via main.py)
 
 ```python
-# Include "resource_enum" in SCAN_MODULES in params.py
+# Include "resource_enum" in SCAN_MODULES in project settings
 SCAN_MODULES = ["domain_discovery", "port_scan", "http_probe", "resource_enum", "vuln_scan"]
 
 # Run the full pipeline

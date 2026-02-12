@@ -108,7 +108,7 @@ docker pull projectdiscovery/httpx:latest
 
 ## Configuration Parameters
 
-All parameters are defined in `params.py`. This section provides **detailed explanations** including performance impact for each option.
+All parameters are configured via the webapp project settings (stored in PostgreSQL) or as defaults in `project_settings.py`. This section provides **detailed explanations** including performance impact for each option.
 
 ---
 
@@ -457,7 +457,7 @@ Banner grabbing is **integrated into httpx_scan.py** and runs automatically afte
 ### Configuration
 
 ```python
-# params.py - Banner Grabbing Configuration
+# Banner Grabbing Configuration (project_settings.py)
 
 # Enable/disable banner grabbing for non-HTTP ports
 BANNER_GRAB_ENABLED = True
@@ -574,7 +574,7 @@ Wappalyzer enhancement is **integrated into httpx_scan.py** and runs automatical
 ### Configuration
 
 ```python
-# params.py - Wappalyzer Configuration
+# Wappalyzer Configuration (project_settings.py)
 
 # Enable/disable Wappalyzer technology enhancement
 WAPPALYZER_ENABLED = True
@@ -1011,7 +1011,7 @@ docker run --rm -i \
 ### Basic Usage (via main.py)
 
 ```python
-# Include "httpx" in SCAN_MODULES in params.py
+# Include "http_probe" in SCAN_MODULES in project settings
 SCAN_MODULES = ["initial_recon", "naabu", "httpx", "nuclei"]
 
 # Run the full pipeline

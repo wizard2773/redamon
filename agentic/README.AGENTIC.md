@@ -95,7 +95,7 @@ flowchart TB
 |------------------|---------|
 | `orchestrator.py` | Main LangGraph agent with ReAct pattern |
 | `state.py` | Pydantic models and TypedDict state definitions |
-| `project_settings.py` | Database-driven configuration (replaces `params.py`) |
+| `project_settings.py` | Database-driven configuration (fetches from webapp API) |
 | `tools.py` | MCP and Neo4j tool management |
 | `api.py` | REST API endpoints |
 | `websocket_api.py` | WebSocket streaming API |

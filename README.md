@@ -62,11 +62,15 @@ NVD_API_KEY=...                # NIST NVD API — higher rate limits for CVE loo
 ### 2. Build & Start
 
 ```bash
-# Build all images (including recon and GVM vulnerability scanners)
-docker compose --profile tools build
+docker compose --profile tools build          # Build all images (recon + vuln-scanner + services)
+docker compose up -d                          # Start all services (first GVM run takes ~30 min for feed sync)
+                                              # Total image size: ~15 GB
+```
 
-# Start all services
-docker compose up -d
+**Without GVM (lighter, faster startup):**
+```bash
+docker compose --profile tools build          # Build all images
+docker compose up -d postgres neo4j recon-orchestrator kali-sandbox agent webapp   # Start core services only
 ```
 
 ### 3. Open the Webapp
@@ -89,45 +93,46 @@ Go to **http://localhost:3000** — create a project, configure your target, and
 ### Common Commands
 
 ```bash
-docker compose up -d                        # Start all services
-docker compose down                         # Stop all services
+docker compose up -d                        # Start all services (including GVM)
+docker compose down                         # Stop all services (keeps data)
 docker compose ps                           # Check service status
 docker compose logs -f                      # Follow all logs
 docker compose logs -f webapp               # Webapp (Next.js)
 docker compose logs -f agent                # AI agent orchestrator
 docker compose logs -f recon-orchestrator   # Recon orchestrator
 docker compose logs -f kali-sandbox         # MCP tool servers
+docker compose logs -f gvmd                 # GVM vulnerability scanner daemon
 docker compose logs -f neo4j                # Neo4j graph database
 docker compose logs -f postgres             # PostgreSQL database
 
-# Full cleanup: remove all containers, images, and volumes
+# Stop services without removing volumes (preserves all data, fast restart)
+docker compose down
+
+# Stop and remove locally built images (forces rebuild on next start)
+docker compose --profile tools down --rmi local
+
+# Full cleanup: remove all containers, images, and volumes (destroys all data!)
 docker compose --profile tools down --rmi local --volumes --remove-orphans
 ```
 
 ### Running Reconnaissance
 
-**Option A: From Webapp (Recommended)**
 1. Create a project with target domain and settings
 2. Navigate to Graph page
 3. Click "Start Recon" button
 4. Watch real-time logs in the drawer
 
-**Option B: From CLI**
-```bash
-cd recon
-docker-compose build
-docker-compose run --rm recon python /app/recon/main.py
-```
-
 ### Running GVM Vulnerability Scan
 
 After reconnaissance completes, you can run a GVM network-level vulnerability scan:
 
-1. Ensure the GVM infrastructure is running (`cd gvm_scan && docker compose up -d`)
+1. GVM starts automatically with `docker compose up -d` (first run takes ~30 min for feed sync)
 2. Navigate to Graph page
 3. Click the "GVM Scan" button (enabled only when recon data exists for the project)
 4. Watch real-time logs in the GVM logs drawer
 5. Download the GVM results JSON when complete
+
+> **Note:** Default GVM credentials are `admin` / `admin` (auto-created by gvmd on first start).
 
 ### Development Mode
 
@@ -266,6 +271,47 @@ All results are combined into a single JSON file (`recon/output/recon_{PROJECT_I
 
 ---
 
+### GVM Vulnerability Scanner (Optional)
+
+After reconnaissance completes, you can optionally run a **GVM/OpenVAS network-level vulnerability scan** to complement the web-layer findings from Nuclei.
+
+#### What is GVM/OpenVAS?
+
+**Greenbone Vulnerability Management (GVM)** — formerly known as OpenVAS — is the world's largest open-source network vulnerability scanner. While Nuclei focuses on web application testing via HTTP templates, GVM operates at a fundamentally different level: it probes services directly at the **protocol layer**, testing for misconfigurations, outdated software, default credentials, and known CVEs across every open port.
+
+The GVM ecosystem consists of several components working together:
+
+- **OpenVAS Scanner (ospd-openvas)** — the scanning engine that executes Network Vulnerability Tests (NVTs) against targets, performing actual protocol-level probes (SSH version checks, SMB enumeration, TLS cipher analysis, banner fingerprinting).
+- **GVM Daemon (gvmd)** — the central management service that orchestrates scans, manages scan configs, stores results, and exposes the GMP (Greenbone Management Protocol) API.
+- **Vulnerability Feed** — a continuously updated database of **170,000+ NVTs** covering operating systems, network services, databases, embedded devices, industrial control systems, and more — the largest open-source vulnerability test feed available.
+- **PostgreSQL + Redis** — backend storage for scan results, NVT metadata, and inter-process communication.
+
+What makes GVM particularly powerful is its **depth of testing**. Unlike signature-based scanners that match HTTP responses against patterns, GVM actively negotiates protocols, authenticates to services, checks software versions against vulnerability databases, tests for default credentials, and probes for misconfigurations that are invisible at the HTTP layer — things like weak SSH ciphers, exposed database ports with no authentication, SNMP community string guessing, and SMB vulnerabilities.
+
+#### Scan Profiles & Time Estimates
+
+GVM includes seven pre-configured scan profiles, each trading thoroughness for speed. Times below are per-target estimates:
+
+| Scan Profile | NVTs | Duration | Description |
+|---|---|---|---|
+| **Host Discovery** | ~100 | 2-5 min | Basic host detection — is the target alive? |
+| **Discovery** | ~500 | 5-10 min | Network discovery — open ports, running services, OS fingerprint |
+| **System Discovery** | ~2,000 | 10-20 min | Detailed OS and service enumeration for asset inventory |
+| **Full and fast** | ~50,000 | 30-60 min | Comprehensive vulnerability scan using port scan results to select relevant NVTs — **recommended default** |
+| **Full and fast ultimate** | ~70,000 | 1-2 hours | Same as above but includes dangerous NVTs that may crash services or hosts |
+| **Full and very deep** | ~50,000 | 2-4 hours | Ignores previously collected port/service data and runs all NVTs unconditionally — waits for timeouts on every test, significantly slower |
+| **Full and very deep ultimate** | ~70,000 | 4-8 hours | Most thorough and slowest option — runs all NVTs including dangerous ones, ignores prior scan data, waits for all timeouts |
+
+The key difference between "fast" and "very deep" profiles is how they use prior information: **fast** profiles leverage port scan results to skip irrelevant NVTs (e.g., skipping SSH checks on a host with no port 22), while **very deep** profiles ignore all prior data and execute every NVT unconditionally, waiting for timeouts on non-responding services. The "ultimate" variants add NVTs that may cause denial-of-service conditions on the target — use them only in controlled lab environments.
+
+> **Note:** The first GVM startup requires a one-time feed synchronization that takes ~30 minutes. Subsequent starts are instant.
+
+#### Integration with RedAmon
+
+GVM findings are stored as Vulnerability nodes (`source="gvm"`) in Neo4j, linked to IP and Subdomain nodes via `HAS_VULNERABILITY` relationships, with associated CVE nodes. This means the AI agent can reason about both web-layer vulnerabilities (from Nuclei) and network-layer vulnerabilities (from GVM) in a single unified graph.
+
+---
+
 ### AI Agent Orchestrator
 
 The AI agent is a **LangGraph-based autonomous system** that implements the ReAct (Reasoning + Acting) pattern. It operates in a loop — reason about the current state, select and execute a tool, analyze the results, repeat — until the objective is complete or the user stops it.
@@ -374,27 +420,42 @@ The graph contains **17 node types** organized into four categories:
 
 The graph connects these nodes through a directed relationship chain that mirrors real-world infrastructure topology:
 
-```
-Domain ──HAS_SUBDOMAIN──> Subdomain ──RESOLVES_TO──> IP ──HAS_PORT──> Port ──RUNS_SERVICE──> Service
-                                                                                                │
-                                                                              SERVES_URL         │
-                                                                                 ↓               │
-                                                                              BaseURL ←──POWERED_BY
-                                                                                 │
-                                                              ┌────────────────┬─┴──────────────┐
-                                                        HAS_ENDPOINT    USES_TECHNOLOGY    HAS_HEADER
-                                                              ↓               ↓               ↓
-                                                           Endpoint      Technology        Header
-                                                              │               │
-                                                        HAS_PARAMETER   HAS_KNOWN_CVE
-                                                              ↓               ↓
-                                                          Parameter         CVE ──HAS_CWE──> MitreData ──HAS_CAPEC──> Capec
-                                                              ↑               ↑
-                                                     AFFECTS_PARAMETER   EXPLOITED_CVE
-                                                              │               │
-                                                     Vulnerability ←──────── Exploit
-                                                        (FOUND_AT→Endpoint)   │
-                                                                         TARGETED_IP→ IP
+```mermaid
+flowchart TB
+    Domain -->|HAS_SUBDOMAIN| Subdomain
+    Subdomain -->|RESOLVES_TO| IP
+    IP -->|HAS_PORT| Port
+    Port -->|RUNS_SERVICE| Service
+    Service -->|POWERED_BY| BaseURL
+    Port -->|SERVES_URL| BaseURL
+    BaseURL -->|HAS_ENDPOINT| Endpoint
+    BaseURL -->|USES_TECHNOLOGY| Technology
+    BaseURL -->|HAS_HEADER| Header
+    Endpoint -->|HAS_PARAMETER| Parameter
+    Technology -->|HAS_KNOWN_CVE| CVE
+    CVE -->|HAS_CWE| MitreData
+    MitreData -->|HAS_CAPEC| Capec
+    Vulnerability -->|FOUND_AT| Endpoint
+    Vulnerability -->|AFFECTS_PARAMETER| Parameter
+    Exploit -->|EXPLOITED_CVE| CVE
+    Exploit -->|TARGETED_IP| IP
+    Exploit --> Vulnerability
+
+    style Domain fill:#1a365d,color:#fff
+    style Subdomain fill:#1a365d,color:#fff
+    style IP fill:#1a365d,color:#fff
+    style Port fill:#1a365d,color:#fff
+    style Service fill:#1a365d,color:#fff
+    style BaseURL fill:#2a4365,color:#fff
+    style Endpoint fill:#2a4365,color:#fff
+    style Parameter fill:#2a4365,color:#fff
+    style Technology fill:#285e61,color:#fff
+    style Header fill:#285e61,color:#fff
+    style CVE fill:#742a2a,color:#fff
+    style Vulnerability fill:#742a2a,color:#fff
+    style MitreData fill:#744210,color:#fff
+    style Capec fill:#744210,color:#fff
+    style Exploit fill:#7b341e,color:#fff
 ```
 
 Vulnerabilities connect differently depending on their source:
@@ -464,23 +525,146 @@ Controls raw socket banner extraction for non-HTTP ports (SSH, FTP, SMTP, MySQL,
 
 #### Web Crawler (Katana)
 
-Controls active website crawling. Key settings include crawl depth (1-10), maximum URLs per domain, JavaScript rendering toggle, scope control (exact domain vs. root domain vs. subdomains), rate limiting, and exclude patterns (100+ default patterns for static assets, CDNs, and tracking pixels).
+Active web crawling using Katana from ProjectDiscovery. Discovers URLs, endpoints, and parameters by following links and parsing JavaScript. Found URLs with parameters feed into Nuclei DAST mode for vulnerability fuzzing.
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Enable Katana | true | Master toggle for active web crawling |
+| Crawl Depth | 2 | How many links deep to follow (1-10). Each level adds ~50% time |
+| Max URLs | 300 | Maximum URLs to collect per domain. 300: ~1-2 min/domain, 1000+: scales linearly |
+| Rate Limit | 50 | Requests per second to avoid overloading target |
+| Timeout | 3600 | Overall crawl timeout in seconds (default: 60 minutes) |
+| JavaScript Crawling | false | Parse JS files to find hidden endpoints and API calls. Uses headless browser (+50-100% time) |
+| Parameters Only | false | Only keep URLs with query parameters (?key=value) for DAST fuzzing |
+| Exclude Patterns | [...] | URL patterns to skip — static assets, images, CDN URLs. 100+ default patterns pre-configured |
+| Custom Headers | [] | Browser-like request headers to avoid detection during DAST crawling (e.g., User-Agent) |
+| Docker Image | (locked) | Katana Docker image used for crawling (system-managed) |
 
 #### Passive URL Discovery (GAU)
 
-Controls historical URL collection from web archives. Settings include provider selection (Wayback Machine, Common Crawl, OTX, URLScan.io), maximum URLs per domain, year range filtering, URL verification via httpx (with its own rate limit and thread settings), HTTP method detection via OPTIONS, dead endpoint filtering, and file extension blacklists.
+Passive URL discovery using GetAllUrls (GAU). Retrieves historical URLs from web archives and threat intelligence sources without touching the target directly. Complements Katana's active crawling with archived data (~20-60 sec per domain).
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Enable GAU | false | Master toggle for passive URL discovery |
+| Providers | wayback, commoncrawl, otx, urlscan | Data sources to query for archived URLs |
+| Max URLs | 1000 | Maximum URLs to fetch per domain (0 = unlimited) |
+| Timeout | 60 | Request timeout per provider (seconds) |
+| Threads | 5 | Parallel fetch threads (1-20) |
+| Year Range | [] | Filter Wayback Machine by year (e.g., "2020, 2024"). Empty = all years |
+| Verbose Output | false | Enable detailed logging for debugging |
+| Blacklist Extensions | [...] | File extensions to exclude (e.g., png, jpg, css, pdf, zip) |
+
+**URL Verification** — when enabled, GAU verifies each discovered URL is still live using httpx, filtering out dead links. This doubles or triples GAU time but eliminates false leads:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Verify URLs | false | HTTP check to confirm archived URLs still exist |
+| Verify Timeout | 5 | Seconds per URL check |
+| Verify Rate Limit | 100 | Verification requests per second |
+| Verify Threads | 50 | Concurrent verification threads (1-100) |
+| Accept Status Codes | [200, 201, 301, ...] | Status codes that indicate a live URL. Include 401/403 for auth-protected endpoints |
+| Filter Dead Endpoints | true | Exclude URLs returning 404/500/timeout from final results |
+
+**HTTP Method Detection** — when URL verification is enabled, GAU can additionally discover allowed HTTP methods (GET, POST, PUT, DELETE) via OPTIONS probes (+30-50% time on top of verification):
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Detect Methods | false | Send OPTIONS request to discover allowed methods |
+| Method Detect Timeout | 5 | Seconds per OPTIONS request |
+| Method Detect Rate Limit | 50 | Requests per second |
+| Method Detect Threads | 25 | Concurrent threads |
 
 #### API Discovery (Kiterunner)
 
-Controls API endpoint brute-forcing. Settings include wordlist selection (routes-large, routes-small, apiroutes), rate limiting, connection count, status code whitelist/blacklist, minimum content length filter, and HTTP method detection mode (brute-force vs. OPTIONS).
+API endpoint bruteforcing using Kiterunner from Assetnote. Discovers hidden REST API routes by testing against comprehensive wordlists derived from real-world Swagger/OpenAPI specifications (~5-30 min per endpoint).
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Enable Kiterunner | true | Master toggle for API route bruteforcing |
+| Wordlist | routes-large | API route wordlist: `routes-large` (~100k routes, 10-30 min) or `routes-small` (~20k routes, 5-10 min) |
+| Rate Limit | 100 | Requests per second. Lower is stealthier |
+| Connections | 100 | Concurrent connections per target |
+| Timeout | 10 | Per-request timeout (seconds) |
+| Scan Timeout | 1000 | Overall scan timeout (seconds). Large wordlists need more time |
+| Threads | 50 | Parallel scanning threads |
+| Min Content Length | 0 | Ignore responses smaller than this (bytes). Filters empty or trivial responses |
+
+**Status Code Filters** — control which HTTP responses are kept:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Ignore Status Codes | [] | Blacklist: filter out noise from common errors (e.g., 404, 500) |
+| Match Status Codes | [200, 201, ...] | Whitelist: only show endpoints with these codes. Includes auth-protected (401, 403) |
+| Custom Headers | [] | Request headers for authenticated API scanning (e.g., Authorization: Bearer token) |
+
+**Method Detection** — Kiterunner wordlists only contain GET routes. This feature discovers POST/PUT/DELETE methods on found endpoints (+30-50% scan time):
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Detect Methods | true | Find additional HTTP methods beyond GET |
+| Detection Mode | bruteforce | `bruteforce` — try each method (slower, more accurate) or `options` — parse Allow header (faster) |
+| Bruteforce Methods | POST, PUT, DELETE, PATCH | Methods to try in bruteforce mode |
+| Method Detect Timeout | 5 | Seconds per request |
+| Method Detect Rate Limit | 50 | Requests per second |
+| Method Detect Threads | 25 | Concurrent threads |
 
 #### Vulnerability Scanner (Nuclei)
 
-Controls template-based vulnerability detection. Key settings include severity filtering, DAST mode toggle (active fuzzing), template inclusion/exclusion by path or tag, rate limiting, concurrency controls, Interactsh out-of-band detection toggle, headless browser rendering, redirect following, and template auto-update.
+Template-based vulnerability scanning using ProjectDiscovery's Nuclei. Runs thousands of security checks against discovered endpoints to identify CVEs, misconfigurations, exposed panels, and other security issues.
+
+**Performance Settings:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Severity Levels | critical, high, medium, low, info | Filter vulnerabilities by severity. Excluding "info" is ~70% faster |
+| Rate Limit | 100 | Requests per second. 100-150 for most targets, lower for sensitive systems |
+| Bulk Size | 25 | Number of hosts to process in parallel |
+| Concurrency | 25 | Templates to execute in parallel |
+| Timeout | 10 | Request timeout per template check (seconds) |
+| Retries | 1 | Retry attempts for failed requests (0-10) |
+| Max Redirects | 10 | Maximum redirect chain to follow (0-50) |
+
+**Template Configuration:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Template Folders | [] | Template directories to include: cves, vulnerabilities, misconfiguration, exposures, technologies, default-logins, takeovers. Empty = all |
+| Exclude Template Paths | [] | Exclude specific directories or template files by path (e.g., http/vulnerabilities/generic/) |
+| Custom Template Paths | [] | Add your own templates in addition to the official repository |
+| Include Tags | [] | Filter by functionality tags: cve, xss, sqli, rce, lfi, ssrf, xxe, ssti. Empty = all |
+| Exclude Tags | [] | Exclude tags — recommended: dos, fuzz for production |
+
+**Template Options:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Auto Update Templates | true | Download latest templates before scan. Adds ~10-30 seconds |
+| New Templates Only | false | Only run templates added since last update. Good for daily scans |
+| DAST Mode | true | Active fuzzing for XSS, SQLi, RCE. More aggressive, requires URLs with parameters (+50-100% time) |
+
+**Advanced Options:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Headless Mode | false | Use headless browser for JavaScript-rendered pages (+100-200% time) |
+| System DNS Resolvers | false | Use OS DNS instead of Nuclei defaults. Better for internal networks |
+| Interactsh | true | Detect blind vulnerabilities (SSRF, XXE, RCE) via out-of-band callback servers. Requires internet |
+| Follow Redirects | true | Follow HTTP redirects during template execution |
+| Scan All IPs | false | Scan all resolved IPs, not just hostnames. May find duplicate vulnerabilities |
 
 #### CVE Enrichment
 
-Controls post-scan CVE lookup. Settings include enable/disable toggle, data source selection (NVD or Vulners), maximum CVEs per finding, minimum CVSS score filter, and API keys.
+Enrich vulnerability findings with detailed CVE data from NVD and other sources. Provides CVSS scores, affected versions, exploitation status, and remediation guidance (~1-5 min depending on technologies found).
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Enable CVE Lookup | true | Master toggle for CVE enrichment |
+| CVE Source | nvd | Data source: `nvd` (National Vulnerability Database) or `vulners` |
+| Max CVEs per Finding | 20 | Maximum CVE entries to retrieve per technology/vulnerability (1-100) |
+| Min CVSS Score | 0 | Only include CVEs at or above this CVSS score (0-10, step 0.1) |
+| NVD API Key | — | Free key from nist.gov — without key: rate-limited (10 req/min), with key: ~80x faster |
+| Vulners API Key | — | API key for Vulners data source |
 
 #### MITRE Mapping
 
@@ -498,25 +682,107 @@ Controls CWE/CAPEC enrichment of CVE findings. Settings include auto-update togg
 - **Exposed Services** — admin ports, databases, Redis without auth, Kubernetes API, SMTP open relay.
 - **Application** — insecure form actions, missing rate limiting.
 
-#### Agent Behavior
+#### GVM Vulnerability Scan
 
-Controls how the AI agent operates during chat sessions:
+Configure GVM/OpenVAS network-level vulnerability scanning. These settings control scan depth, target strategy, and timeouts for the Greenbone vulnerability scanner. Requires the GVM stack to be running (starts automatically with `docker compose up -d`).
+
+**Scan Configuration:**
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| LLM Model | gpt-5.2 | The language model powering the agent |
-| Max Iterations | 100 | Maximum reasoning-action loops per objective |
-| Require Approval for Exploitation | true | Pause and ask before entering exploitation phase |
-| Require Approval for Post-Exploitation | true | Pause and ask before entering post-exploitation phase |
-| Activate Post-Exploitation Phase | true | Whether post-exploitation is available at all |
-| Post-Exploitation Type | statefull | Meterpreter sessions (statefull) vs. one-shot commands (stateless) |
-| LHOST / LPORT | — | Attacker IP and port for reverse shell payloads |
-| Bind Port on Target | 4444 | Port the target opens for bind shell payloads |
-| Payload Use HTTPS | false | Use HTTPS for reverse shell callbacks |
-| Custom System Prompts | — | Per-phase custom instructions injected into the agent's system prompt |
-| Tool Output Max Chars | 8000 | Truncation limit for tool output in context |
-| Execution Trace Memory | 100 | Number of historical steps kept in the agent's working memory |
-| Brute Force Max Attempts | 3 | Maximum wordlist attempts per service |
+| Scan Profile | Full and fast | GVM scan configuration preset — see [Scan Profiles & Time Estimates](#scan-profiles--time-estimates) for the full comparison of all 7 profiles |
+| Scan Targets Strategy | both | Which targets from recon data to scan: `both` (IPs and hostnames), `ips_only`, or `hostnames_only`. "Both" doubles the target count |
+
+**Timeouts & Polling:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Task Timeout | 14400 | Maximum seconds to wait for a single scan task. 0 = unlimited. Default: 4 hours |
+| Poll Interval | 5 | Seconds between scan status checks (5-300). Lower values give faster log updates |
+
+**Post-Scan:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Cleanup After Scan | true | Remove scan targets and tasks from GVM's internal database after results are extracted. Keeps GVM clean across multiple scans. Results are always saved to JSON and Neo4j regardless |
+
+#### GitHub Secret Hunting
+
+Search GitHub repositories for exposed secrets, API keys, and credentials related to your target domain. Identifies leaked sensitive data that could enable unauthorized access to systems and services.
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| GitHub Access Token | — | Required for GitHub secret scanning. Create a token with `repo` scope (ghp_xxxxxxxxxxxx) |
+| Target Organization | — | GitHub organization name to scan |
+| Scan Member Repositories | false | Include repositories of organization members |
+| Scan Gists | false | Search for secrets in gists |
+| Scan Commits | false | Search commit history for secrets. Most expensive operation — disabling saves 50%+ time |
+| Max Commits to Scan | 100 | Number of commits to scan per repository (1-1000). Only visible when Scan Commits is enabled. Scales linearly: 1000 = ~10x slower |
+| Output as JSON | false | Save results in JSON format |
+
+#### Agent Behavior
+
+Configure the AI agent orchestrator that performs autonomous pentesting. Controls LLM model, phase transitions, payload settings, tool access, and safety gates.
+
+**LLM & Phase Configuration:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| LLM Model | gpt-5.2 | The language model powering the agent. Supports Anthropic (Claude Opus 4.6, Sonnet 4.5, Haiku 4.5) and OpenAI (GPT-5.2, GPT-5, GPT-4.1 families). Anthropic models require ANTHROPIC_API_KEY |
+| Post-Exploitation Type | statefull | `statefull` — keeps Meterpreter sessions between turns. `stateless` — executes one-shot commands |
+| Activate Post-Exploitation Phase | true | Whether post-exploitation is available at all. When disabled, the agent stops after exploitation |
+| Informational Phase System Prompt | — | Custom instructions injected during the informational/recon phase. Leave empty for default |
+| Exploitation Phase System Prompt | — | Custom instructions injected during the exploitation phase. Leave empty for default |
+| Post-Exploitation Phase System Prompt | — | Custom instructions injected during the post-exploitation phase. Leave empty for default |
+
+**Payload Direction:**
+
+Controls how reverse/bind shell payloads connect. **Reverse**: target connects back to you (LHOST + LPORT). **Bind**: you connect to the target (leave LPORT empty).
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| LHOST (Attacker IP) | — | Your IP address for reverse shell callbacks. Leave empty for bind mode |
+| LPORT | — | Your listening port for reverse shells. Leave empty for bind mode |
+| Bind Port on Target | 4444 | Port the target opens when using bind shell payloads |
+| Payload Use HTTPS | false | Use `reverse_https` instead of `reverse_tcp` for reverse payloads |
+
+**Agent Limits:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Max Iterations | 100 | Maximum LLM reasoning-action loops per objective |
+| Trace Memory Steps | 100 | Number of past steps kept in the agent's working context |
+| Tool Output Max Chars | 8000 | Truncation limit for tool output passed to the LLM (min: 1000) |
+
+**Approval Gates:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Require Approval for Exploitation | true | User confirmation before transitioning to exploitation phase |
+| Require Approval for Post-Exploitation | true | User confirmation before transitioning to post-exploitation phase |
+
+**Retries, Logging & Debug:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Cypher Max Retries | 3 | Neo4j query retry attempts on failure (0-10) |
+| Brute Force Max Attempts | 3 | Maximum wordlist combinations to try per service (1-10) |
+| Log Max MB | 10 | Maximum log file size before rotation |
+| Log Backups | 5 | Number of rotated log backups to keep |
+| Create Graph Image on Init | false | Generate a LangGraph visualization when the agent starts. Useful for debugging |
+
+**Tool Phase Restrictions:**
+
+A matrix that controls which tools the agent can use in each operational phase. Each tool can be enabled/disabled independently per phase:
+
+| Tool | Informational | Exploitation | Post-Exploitation |
+|------|:---:|:---:|:---:|
+| query_graph | ✓ | ✓ | ✓ |
+| web_search | ✓ | ✓ | ✓ |
+| execute_curl | ✓ | ✓ | ✓ |
+| execute_naabu | ✓ | ✓ | ✓ |
+| metasploit_console | — | ✓ | ✓ |
+| msf_restart | — | ✓ | ✓ |
 
 ---
 
@@ -547,10 +813,14 @@ flowchart TB
         Metasploit[Metasploit Server<br/>:8003]
     end
 
+    subgraph Scanning["🔍 Scanning Layer"]
+        Recon[Recon Pipeline<br/>Docker Container]
+        GVM[GVM/OpenVAS Scanner<br/>Network Vuln Assessment]
+    end
+
     subgraph Data["💾 Data Layer"]
         Neo4j[(Neo4j Graph DB<br/>:7474/:7687)]
         Postgres[(PostgreSQL<br/>Project Settings<br/>:5432)]
-        Recon[Recon Pipeline<br/>Docker Container]
     end
 
     subgraph Targets["🎯 Target Layer"]
@@ -565,6 +835,7 @@ flowchart TB
     Webapp --> Neo4j
     Webapp --> Postgres
     ReconOrch -->|Docker SDK| Recon
+    ReconOrch -->|Docker SDK| GVM
     Recon -->|Fetch Settings| Webapp
     Agent --> Neo4j
     Agent -->|MCP Protocol| Naabu
@@ -572,6 +843,10 @@ flowchart TB
     Agent -->|MCP Protocol| Nuclei
     Agent -->|MCP Protocol| Metasploit
     Recon --> Neo4j
+    GVM -->|Reads Recon Output| Recon
+    GVM --> Neo4j
+    GVM --> Target
+    GVM --> GuineaPigs
     Naabu --> Target
     Nuclei --> Target
     Metasploit --> Target
@@ -596,6 +871,12 @@ flowchart TB
     subgraph Phase2["Phase 2: Data Storage"]
         Vulns --> JSON[(JSON Output)]
         JSON --> Graph[(Neo4j Graph)]
+    end
+
+    subgraph Phase2b["Phase 2b: Network Vuln Scan (Optional)"]
+        JSON -->|IPs + Hostnames| GVM[🛡️ GVM/OpenVAS<br/>170k+ NVTs]
+        GVM --> GVMResults[(GVM JSON Output)]
+        GVMResults --> Graph
     end
 
     subgraph Phase3["Phase 3: AI Analysis"]
@@ -667,9 +948,17 @@ flowchart TB
                 PrismaClient[Prisma Client]
             end
 
-            subgraph GVMContainer["gvm-container"]
-                OpenVAS[OpenVAS Scanner]
-                GVMd[GVM Daemon]
+            subgraph GVMStack["GVM Stack (Network Vuln Scanner)"]
+                GVMd[gvmd<br/>GVM Daemon]
+                OSPD[ospd-openvas<br/>Scanner Engine]
+                RedisGVM[redis-gvm<br/>Cache/Queue]
+                PgGVM[pg-gvm<br/>GVM Database]
+                GVMData[Data Containers<br/>VT + SCAP + CERT + Notus]
+            end
+
+            subgraph GVMScanContainer["gvm-scanner-container"]
+                GVMScanPy[Python Scripts]
+                GVMClient[python-gvm Client]
             end
 
             subgraph GuineaContainer["guinea-pigs"]
@@ -680,9 +969,16 @@ flowchart TB
 
         Volumes["📁 Shared Volumes"]
         ReconOrchContainer -->|Manages| ReconContainer
+        ReconOrchContainer -->|Manages| GVMScanContainer
+        GVMScanContainer -->|Unix Socket| GVMd
+        GVMd --> OSPD
+        GVMd --> PgGVM
+        OSPD --> RedisGVM
+        GVMData -->|Feed Sync| GVMd
         ReconContainer --> Volumes
+        GVMScanContainer -->|Reads Recon Output| Volumes
         Volumes --> Neo4jContainer
-        Volumes --> GVMContainer
+        GVMScanContainer --> Neo4jContainer
         WebappContainer --> PostgresContainer
         ReconContainer -->|Fetch Settings| WebappContainer
     end
@@ -693,7 +989,7 @@ flowchart TB
 ```mermaid
 flowchart TB
     subgraph Input["📥 Input Configuration"]
-        Params[params.py<br/>TARGET_DOMAIN<br/>SUBDOMAIN_LIST<br/>SCAN_MODULES]
+        Params[project_settings.py<br/>Webapp API → PostgreSQL<br/>TARGET_DOMAIN, SCAN_MODULES]
         Env[.env<br/>API Keys<br/>Neo4j Credentials]
     end
 
@@ -730,10 +1026,6 @@ flowchart TB
             Nuclei[Nuclei<br/>9000+ Templates]
             MITRE[add_mitre.py<br/>CWE/CAPEC Enrichment]
         end
-
-        subgraph Module6["6️⃣ github"]
-            GHHunter[GitHubSecretHunter<br/>Secret Detection]
-        end
     end
 
     subgraph Output["📤 Output"]
@@ -765,9 +1057,7 @@ flowchart TB
     Endpoints --> Nuclei
     Nuclei --> MITRE
 
-    MITRE --> GHHunter
-
-    GHHunter --> JSON
+    MITRE --> JSON
     JSON --> Graph
 ```
 
@@ -784,9 +1074,10 @@ sequenceDiagram
     participant VS as vuln_scan
     participant JSON as JSON Output
     participant Neo4j as Neo4j Graph
+    participant GVM as GVM Scanner
 
     User->>Main: python main.py
-    Main->>Main: Load params.py
+    Main->>Main: Load project settings (API or defaults)
 
     rect rgb(40, 40, 80)
         Note over DD: Phase 1: Domain Discovery
@@ -839,6 +1130,17 @@ sequenceDiagram
     Main->>JSON: Save recon_domain.json
     Main->>Neo4j: Update graph database
     Neo4j-->>User: Graph ready for visualization
+
+    rect rgb(40, 80, 80)
+        Note over GVM: Phase 6 (Optional): Network Vuln Scan
+        User->>GVM: Trigger GVM scan from UI
+        GVM->>JSON: Read recon output (IPs + hostnames)
+        GVM->>GVM: Create scan targets
+        GVM->>GVM: Run 170k+ NVTs per target
+        GVM->>GVM: Parse results + CVE extraction
+        GVM->>Neo4j: Store Vulnerability + CVE nodes
+        Neo4j-->>User: Network vulns added to graph
+    end
 ```
 
 ### Agent Workflow (ReAct Pattern)
@@ -872,62 +1174,6 @@ stateDiagram-v2
     Reasoning --> Stopped: User clicks Stop
     ToolExecution --> Stopped: User clicks Stop
     Stopped --> Reasoning: User clicks Resume
-```
-
-### Graph Database Schema
-
-```mermaid
-erDiagram
-    Domain ||--o{ Subdomain : HAS_SUBDOMAIN
-    Subdomain ||--o{ IP : RESOLVES_TO
-    IP ||--o{ Port : HAS_PORT
-    Port ||--o{ Service : RUNS_SERVICE
-    Service ||--o{ Technology : USES_TECHNOLOGY
-    Technology ||--o{ Vulnerability : HAS_VULNERABILITY
-    Vulnerability ||--o{ CVE : REFERENCES
-    Vulnerability ||--o{ MITRE : MAPS_TO
-
-    Domain {
-        string name
-        string user_id
-        string project_id
-        datetime discovered_at
-    }
-
-    Subdomain {
-        string name
-        string status
-    }
-
-    IP {
-        string address
-        string type
-        boolean is_cdn
-    }
-
-    Port {
-        int number
-        string protocol
-        string state
-    }
-
-    Service {
-        string name
-        string version
-        string banner
-    }
-
-    Technology {
-        string name
-        string version
-        string category
-    }
-
-    Vulnerability {
-        string id
-        string severity
-        string description
-    }
 ```
 
 ### MCP Tool Integration

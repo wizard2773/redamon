@@ -24,13 +24,17 @@ export default function ProjectsPage() {
   const deleteUserMutation = useDeleteUser()
   const hasAutoSelected = useRef(false)
 
-  // Auto-select first user only on initial load (not after explicit deselect)
+  // Clear stale userId if deleted, or auto-select first user on initial load
   useEffect(() => {
-    if (!hasAutoSelected.current && !userId && users && users.length > 0) {
+    if (!users) return
+    if (userId && !users.find(u => u.id === userId)) {
+      setUserId(users.length > 0 ? users[0].id : null)
+      setCurrentProject(null)
+    } else if (!hasAutoSelected.current && !userId && users.length > 0) {
       setUserId(users[0].id)
       hasAutoSelected.current = true
     }
-  }, [userId, users, setUserId])
+  }, [userId, users, setUserId, setCurrentProject])
 
   const handleSelectProject = (project: { id: string; name: string; targetDomain: string }) => {
     setCurrentProject({

@@ -21,7 +21,7 @@ Configured via root `.env` file:
 
 ## Configuration
 
-Set `UPDATE_GRAPH_DB = True` in `params.py` to automatically populate the graph after `domain_discovery` module completes.
+The graph is automatically populated after each recon scan phase completes. Graph updates are controlled by the `UPDATE_GRAPH_DB` setting in the project configuration.
 
 ## Docker Commands
 

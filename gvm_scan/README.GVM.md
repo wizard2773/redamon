@@ -973,7 +973,7 @@ docker stats
 
 ### Credential Security
 ```bash
-# Store password in .env file (not in params.py)
+# Store password in .env file
 echo "GVM_PASSWORD=your_secure_password" >> .env
 
 # Ensure .env is in .gitignore

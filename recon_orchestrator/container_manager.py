@@ -45,9 +45,10 @@ PHASE_PATTERNS = [
 # GVM phase patterns to detect from logs
 GVM_PHASE_PATTERNS = [
     (r"Loading recon data", "Loading Recon Data", 1),
-    (r"Connecting to GVM", "Connecting to GVM", 2),
-    (r"PHASE 1.*Scanning.*IP|Scanning.*IP addresses", "Scanning IPs", 3),
-    (r"PHASE 2.*Scanning.*hostname|Scanning.*hostnames", "Scanning Hostnames", 4),
+    (r"Connecting to GVM|Waiting for GVM to be ready", "Waiting for GVM", 2),
+    (r"Connected to GVM at", "Connected to GVM", 3),
+    (r"PHASE 1.*Scanning.*IP|Scanning.*IP addresses", "Scanning IPs", 4),
+    (r"PHASE 2.*Scanning.*hostname|Scanning.*hostnames", "Scanning Hostnames", 5),
 ]
 
 

@@ -119,7 +119,7 @@ The Nuclei module includes an integrated CVE lookup feature that queries the NVD
 ### Configuration
 
 ```python
-# params.py - CVE Lookup Configuration
+# CVE Lookup Configuration (project_settings.py)
 # =============================================================================
 
 # Enable/disable technology-based CVE lookup
@@ -259,7 +259,7 @@ The script automatically adds delays between requests to avoid rate limiting.
 For better results (like Nmap's vulners script), you can use the Vulners API:
 
 1. Get a free API key at [vulners.com](https://vulners.com/)
-2. Set in `params.py`:
+2. Configure in the webapp project settings or environment variables:
    ```python
    CVE_LOOKUP_SOURCE = "vulners"
    VULNERS_API_KEY = "your-api-key-here"
@@ -309,7 +309,7 @@ docker pull projectdiscovery/nuclei:latest
 
 ## Configuration Parameters
 
-All parameters are defined in `params.py`:
+All parameters are configured via the webapp project settings (stored in PostgreSQL) or as defaults in `project_settings.py`:
 
 ### Severity Filtering
 
@@ -557,7 +557,7 @@ docker run --rm \
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│                              params.py                                    │
+│                          project_settings.py                               │
 │  NUCLEI_SEVERITY, NUCLEI_RATE_LIMIT, NUCLEI_TAGS, NUCLEI_DOCKER_IMAGE... │
 └─────────────────────────────────┬────────────────────────────────────────┘
                                   │
@@ -876,7 +876,7 @@ info:
 RedAmon automatically updates templates when `NUCLEI_AUTO_UPDATE_TEMPLATES = True` (default):
 
 ```python
-# In params.py
+# In project settings
 NUCLEI_AUTO_UPDATE_TEMPLATES = True  # Runs "nuclei -ut" before each scan
 ```
 
@@ -939,7 +939,7 @@ docker volume rm nuclei-templates
 For faster scan startup (skip update check):
 
 ```python
-# In params.py
+# In project settings
 NUCLEI_AUTO_UPDATE_TEMPLATES = False
 ```
 
@@ -1304,8 +1304,8 @@ technologies/
 ### Basic Usage (via main.py)
 
 ```python
-# Simply include "nuclei" in SCAN_MODULES in params.py
-SCAN_MODULES = ["initial_recon", "nmap", "nuclei"]
+# Include "vuln_scan" in SCAN_MODULES in project settings
+SCAN_MODULES = ["domain_discovery", "port_scan", "http_probe", "vuln_scan"]
 
 # Run the full pipeline
 python3 recon/main.py
@@ -1391,7 +1391,7 @@ KATANA_CUSTOM_HEADERS = [
 # Start Tor
 sudo systemctl start tor
 
-# In params.py
+# In project settings
 USE_TOR_FOR_RECON = True
 ```
 
@@ -1431,7 +1431,7 @@ sudo systemctl status docker
 #### Scan too slow
 
 ```python
-# Increase performance in params.py
+# Increase performance in project settings
 NUCLEI_RATE_LIMIT = 300
 NUCLEI_BULK_SIZE = 50
 NUCLEI_CONCURRENCY = 50
@@ -1641,7 +1641,7 @@ In addition to Nuclei templates, RedAmon includes custom Python-based security c
 
 ### Configuration
 
-All checks are enabled by default. Disable in `params.py`:
+All checks are enabled by default. Disable in the webapp project settings:
 
 ```python
 # Global switch
@@ -1652,7 +1652,7 @@ SECURITY_CHECK_LOGIN_NO_HTTPS = True
 SECURITY_CHECK_SPF_MISSING = True
 SECURITY_CHECK_REDIS_NO_AUTH = True
 SECURITY_CHECK_NO_RATE_LIMITING = True
-# ... see params.py for full list
+# ... see project_settings.py for full list
 
 # Performance
 SECURITY_CHECK_TIMEOUT = 10   # Request timeout (seconds)

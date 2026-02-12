@@ -121,14 +121,20 @@ def run_vulnerability_scan(
         Complete vulnerability scan results
     """
     # Read scan settings from project settings (fetched from webapp API)
+    scan_config = get_setting('SCAN_CONFIG', 'Full and fast')
     scan_targets = get_setting('SCAN_TARGETS', 'both')
+    task_timeout = get_setting('TASK_TIMEOUT', 14400)
+    poll_interval = get_setting('POLL_INTERVAL', 30)
     cleanup = get_setting('CLEANUP_AFTER_SCAN', True)
 
     print("\n" + "=" * 70)
     print("           RedAmon - GVM Vulnerability Scanner")
     print("=" * 70)
     print(f"  Target Domain: {domain}")
+    print(f"  Scan Config:   {scan_config}")
     print(f"  Scan Strategy: {scan_targets}")
+    print(f"  Task Timeout:  {task_timeout}s")
+    print(f"  Poll Interval: {poll_interval}s")
     print(f"  Cleanup After: {cleanup}")
     print("=" * 70 + "\n")
 

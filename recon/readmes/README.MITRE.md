@@ -162,7 +162,7 @@ CWE-284 (Pillar, DISCOURAGED) → no CAPECs shown ✓
 
 ## Configuration Parameters
 
-All parameters are configured in `params.py`:
+All parameters are configured via the webapp project settings (stored in PostgreSQL) or as defaults in `project_settings.py`:
 
 ```python
 # =============================================================================
@@ -401,7 +401,7 @@ This is **correct behavior** - we don't show inherited CAPECs from parent CWEs t
 MITRE enrichment is automatically included when running `vuln_scan`:
 
 ```python
-# params.py
+# project_settings.py (DEFAULT_SETTINGS)
 SCAN_MODULES = ["domain_discovery", "port_scan", "http_probe", "vuln_scan"]
 # ↑ vuln_scan automatically includes MITRE CWE/CAPEC enrichment
 ```
@@ -409,14 +409,14 @@ SCAN_MODULES = ["domain_discovery", "port_scan", "http_probe", "vuln_scan"]
 ### CWE Only (No CAPEC)
 
 ```python
-# params.py
+# project_settings.py (DEFAULT_SETTINGS)
 MITRE_INCLUDE_CAPEC = False  # Only show CWE weaknesses
 ```
 
 ### Offline Mode (No Internet)
 
 ```python
-# params.py
+# project_settings.py (DEFAULT_SETTINGS)
 MITRE_AUTO_UPDATE_DB = False  # Use cached database only
 ```
 
