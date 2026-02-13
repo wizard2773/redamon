@@ -1,5 +1,6 @@
 'use client'
 
+import { useRef, useState, useEffect, useCallback } from 'react'
 import { NODE_COLORS } from '../../config'
 import { GraphData } from '../../types'
 import styles from './PageBottomBar.module.css'
@@ -11,11 +12,46 @@ interface PageBottomBarProps {
 }
 
 export function PageBottomBar({ data, is3D, showLabels }: PageBottomBarProps) {
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const [canScrollLeft, setCanScrollLeft] = useState(false)
+  const [canScrollRight, setCanScrollRight] = useState(false)
+
+  const checkScroll = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    setCanScrollLeft(el.scrollLeft > 0)
+    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 1)
+  }, [])
+
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    checkScroll()
+    const observer = new ResizeObserver(checkScroll)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [checkScroll])
+
+  const scroll = (direction: 'left' | 'right') => {
+    const el = scrollRef.current
+    if (!el) return
+    el.scrollBy({ left: direction === 'left' ? -120 : 120, behavior: 'smooth' })
+  }
+
   return (
     <div className={styles.bottomBar}>
       <div className={styles.legend}>
         <span className={styles.sectionTitle}>Node Types:</span>
-        <div className={styles.legendItems}>
+        {canScrollLeft && (
+          <button className={styles.scrollBtn} onClick={() => scroll('left')}>
+            ‹
+          </button>
+        )}
+        <div
+          ref={scrollRef}
+          className={styles.legendItems}
+          onScroll={checkScroll}
+        >
           {Object.entries(NODE_COLORS)
             .filter(([key]) => key !== 'Default')
             .map(([type, color]) => (
@@ -28,6 +64,11 @@ export function PageBottomBar({ data, is3D, showLabels }: PageBottomBarProps) {
               </div>
             ))}
         </div>
+        {canScrollRight && (
+          <button className={styles.scrollBtn} onClick={() => scroll('right')}>
+            ›
+          </button>
+        )}
       </div>
 
       <div className={styles.divider} />

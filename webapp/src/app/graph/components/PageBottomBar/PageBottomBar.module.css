@@ -23,13 +23,42 @@
   align-items: center;
   gap: var(--space-3);
   flex: 1;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .legendItems {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  flex-wrap: wrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.legendItems::-webkit-scrollbar {
+  display: none;
+}
+
+.scrollBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.scrollBtn:hover {
+  background: var(--bg-quaternary);
+  color: var(--text-primary);
 }
 
 .legendItem {
