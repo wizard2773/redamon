@@ -9,7 +9,7 @@
 'use client'
 
 import { useState, useRef, useEffect, useCallback, KeyboardEvent } from 'react'
-import { Send, Bot, User, Loader2, AlertCircle, Sparkles, RotateCcw, Shield, Target, Zap, HelpCircle, WifiOff, Wifi, Square, Play } from 'lucide-react'
+import { Send, Bot, User, Loader2, AlertCircle, Sparkles, RotateCcw, Shield, Target, Zap, HelpCircle, WifiOff, Wifi, Square, Play, FileDown } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
@@ -40,6 +40,7 @@ interface Message {
   phase?: Phase
   timestamp: Date
   isGuidance?: boolean
+  isReport?: boolean
 }
 
 type ChatItem = Message | ThinkingItem | ToolExecutionItem
@@ -336,6 +337,7 @@ export function AIAssistantDrawer({
           content: message.payload.answer,
           phase: message.payload.phase as Phase,
           timestamp: new Date(),
+          isReport: message.payload.task_complete === true,
         }
         setChatItems(prev => [...prev, assistantMessage])
         setIsLoading(false)
@@ -531,6 +533,71 @@ export function AIAssistantDrawer({
     setIsLoading(true)
   }, [sendResume])
 
+  const handleDownloadPDF = useCallback(async (content: string) => {
+    // Dynamic import — html2pdf.js is client-side only
+    const html2pdf = (await import('html2pdf.js')).default
+
+    // Create a temporary container with the rendered markdown
+    const container = document.createElement('div')
+    container.style.cssText = 'position:absolute;left:-9999px;top:0;width:700px;padding:32px;font-family:system-ui,-apple-system,sans-serif;font-size:13px;line-height:1.6;color:#1a1a1a;background:#fff;'
+
+    // Style overrides for print
+    const styleTag = document.createElement('style')
+    styleTag.textContent = `
+      h1 { font-size:20px; margin:24px 0 12px; border-bottom:2px solid #d32f2f; padding-bottom:6px; color:#1a1a1a; }
+      h2 { font-size:16px; margin:20px 0 10px; color:#333; }
+      h3 { font-size:14px; margin:16px 0 8px; color:#444; }
+      table { border-collapse:collapse; width:100%; margin:10px 0; font-size:11px; }
+      th, td { border:1px solid #ccc; padding:6px 10px; text-align:left; }
+      th { background:#f0f0f0; font-weight:600; }
+      tr:nth-child(even) { background:#fafafa; }
+      code { background:#f4f4f4; padding:2px 5px; border-radius:3px; font-size:0.9em; }
+      pre { background:#1e1e1e; color:#d4d4d4; padding:12px; border-radius:6px; overflow-x:auto; font-size:11px; }
+      ul, ol { padding-left:20px; }
+      li { margin:4px 0; }
+      hr { border:none; border-top:1px solid #ddd; margin:16px 0; }
+      p { margin:8px 0; }
+    `
+    container.appendChild(styleTag)
+
+    // Render markdown to HTML (simple conversion for PDF)
+    const htmlContent = document.createElement('div')
+    // Use a temporary ReactMarkdown render by creating the HTML from the existing DOM
+    const tempDiv = document.querySelector(`[data-report-content]`)
+    if (tempDiv) {
+      htmlContent.innerHTML = tempDiv.innerHTML
+    } else {
+      // Fallback: basic markdown-to-html conversion
+      htmlContent.innerHTML = content
+        .replace(/^### (.*$)/gm, '<h3>$1</h3>')
+        .replace(/^## (.*$)/gm, '<h2>$1</h2>')
+        .replace(/^# (.*$)/gm, '<h1>$1</h1>')
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.*?)\*/g, '<em>$1</em>')
+        .replace(/`(.*?)`/g, '<code>$1</code>')
+        .replace(/\n/g, '<br>')
+    }
+    container.appendChild(htmlContent)
+    document.body.appendChild(container)
+
+    const timestamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')
+    const filename = `RedAmon-PenTest-Report-${timestamp}.pdf`
+
+    await html2pdf()
+      .set({
+        margin: [10, 12, 10, 12],
+        filename,
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true, logging: false },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+        pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
+      })
+      .from(container)
+      .save()
+
+    document.body.removeChild(container)
+  }, [])
+
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -643,7 +710,24 @@ export function AIAssistantDrawer({
           {item.isGuidance && (
             <span className={styles.guidanceBadge}>Guidance</span>
           )}
-          <div className={styles.messageText}>
+          {item.isReport && (
+            <div className={styles.reportHeader}>
+              <span className={styles.reportBadge}>Report</span>
+              <button
+                className={styles.reportDownloadButton}
+                onClick={() => handleDownloadPDF(item.content)}
+                title="Download report as PDF"
+                aria-label="Download report as PDF"
+              >
+                <FileDown size={13} />
+                <span>PDF</span>
+              </button>
+            </div>
+          )}
+          <div
+            className={styles.messageText}
+            {...(item.isReport ? { 'data-report-content': true } : {})}
+          >
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               components={{
