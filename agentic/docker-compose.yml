@@ -34,6 +34,7 @@ services:
       MCP_NMAP_URL: http://host.docker.internal:8004/sse
       MCP_METASPLOIT_URL: http://host.docker.internal:8003/sse
       MCP_METASPLOIT_PROGRESS_URL: http://host.docker.internal:8013/progress
+      MCP_HYDRA_PROGRESS_URL: http://host.docker.internal:8014/progress
       # Webapp API (via host network)
       WEBAPP_API_URL: http://host.docker.internal:3000
     extra_hosts:

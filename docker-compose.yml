@@ -290,6 +290,7 @@ services:
       - "${MCP_METASPLOIT_PORT:-8003}:8003"
       - "${MCP_NMAP_PORT:-8004}:8004"
       - "8013:8013"
+      - "8014:8014"
       - "4444:4444"
     volumes:
       - ./mcp/servers:/opt/mcp_servers
@@ -304,6 +305,7 @@ services:
       METASPLOIT_PORT: "8003"
       NMAP_PORT: "8004"
       MSF_PROGRESS_PORT: "8013"
+      HYDRA_PROGRESS_PORT: "8014"
       MSF_AUTO_UPDATE: "${MSF_AUTO_UPDATE:-true}"
       NUCLEI_AUTO_UPDATE: "${NUCLEI_AUTO_UPDATE:-true}"
     restart: unless-stopped
@@ -346,6 +348,7 @@ services:
       MCP_NMAP_URL: http://kali-sandbox:8004/sse
       MCP_METASPLOIT_URL: http://kali-sandbox:8003/sse
       MCP_METASPLOIT_PROGRESS_URL: http://kali-sandbox:8013/progress
+      MCP_HYDRA_PROGRESS_URL: http://kali-sandbox:8014/progress
       # Webapp API (internal docker network)
       WEBAPP_API_URL: http://webapp:3000
     extra_hosts:

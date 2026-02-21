@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { GraphToolbar } from './components/GraphToolbar'
 import { GraphCanvas } from './components/GraphCanvas'
@@ -10,7 +10,10 @@ import { PageBottomBar } from './components/PageBottomBar'
 import { ReconConfirmModal } from './components/ReconConfirmModal'
 import { GvmConfirmModal } from './components/GvmConfirmModal'
 import { ReconLogsDrawer } from './components/ReconLogsDrawer'
-import { useGraphData, useDimensions, useNodeSelection } from './hooks'
+import { ViewTabs, type ViewMode } from './components/ViewTabs'
+import { DataTable } from './components/DataTable'
+import { useGraphData, useDimensions, useNodeSelection, useTableData } from './hooks'
+import { exportToExcel } from './utils/exportExcel'
 import { useTheme, useSession, useReconStatus, useReconSSE, useGvmStatus, useGvmSSE, useGithubHuntStatus, useGithubHuntSSE } from '@/hooks'
 import { useProject } from '@/providers/ProjectProvider'
 import { GVM_PHASES, GITHUB_HUNT_PHASES } from '@/lib/recon-types'
@@ -20,6 +23,7 @@ export default function GraphPage() {
   const router = useRouter()
   const { projectId, userId, currentProject, setCurrentProject, isLoading: projectLoading } = useProject()
 
+  const [activeView, setActiveView] = useState<ViewMode>('graph')
   const [is3D, setIs3D] = useState(true)
   const [showLabels, setShowLabels] = useState(true)
   const [isAIOpen, setIsAIOpen] = useState(false)
@@ -129,6 +133,88 @@ export default function GraphPage() {
     projectId,
     enabled: githubHuntState?.status === 'running' || githubHuntState?.status === 'starting',
   })
+
+  // ── Table view state (lifted from DataTable) ──────────────────────────
+  const tableRows = useTableData(data)
+  const [globalFilter, setGlobalFilter] = useState('')
+  const [activeNodeTypes, setActiveNodeTypes] = useState<Set<string>>(new Set())
+  const [tableInitialized, setTableInitialized] = useState(false)
+
+  const nodeTypeCounts = useMemo(() => {
+    const counts: Record<string, number> = {}
+    tableRows.forEach(r => {
+      counts[r.node.type] = (counts[r.node.type] || 0) + 1
+    })
+    return counts
+  }, [tableRows])
+
+  const nodeTypes = useMemo(() => Object.keys(nodeTypeCounts).sort(), [nodeTypeCounts])
+
+  useEffect(() => {
+    if (nodeTypes.length > 0 && !tableInitialized) {
+      setActiveNodeTypes(new Set(nodeTypes))
+      setTableInitialized(true)
+    }
+  }, [nodeTypes, tableInitialized])
+
+  const filteredByType = useMemo(() => {
+    if (activeNodeTypes.size === 0) return []
+    return tableRows.filter(r => activeNodeTypes.has(r.node.type))
+  }, [tableRows, activeNodeTypes])
+
+  // Filtered graph data for GraphCanvas (filter nodes + only keep links between visible nodes)
+  const filteredGraphData = useMemo(() => {
+    if (!data) return undefined
+    if (activeNodeTypes.size === nodeTypes.length) return data // all types active, no filter needed
+    const filteredNodes = data.nodes.filter(n => activeNodeTypes.has(n.type))
+    const visibleIds = new Set(filteredNodes.map(n => n.id))
+    const filteredLinks = data.links.filter(l => {
+      const srcId = typeof l.source === 'string' ? l.source : l.source.id
+      const tgtId = typeof l.target === 'string' ? l.target : l.target.id
+      return visibleIds.has(srcId) && visibleIds.has(tgtId)
+    })
+    return { ...data, nodes: filteredNodes, links: filteredLinks }
+  }, [data, activeNodeTypes, nodeTypes.length])
+
+  const textFilteredCount = useMemo(() => {
+    if (!globalFilter) return filteredByType.length
+    const search = globalFilter.toLowerCase()
+    return filteredByType.filter(r =>
+      r.node.name?.toLowerCase().includes(search) ||
+      r.node.type?.toLowerCase().includes(search)
+    ).length
+  }, [filteredByType, globalFilter])
+
+  const handleToggleNodeType = useCallback((type: string) => {
+    setActiveNodeTypes(prev => {
+      const next = new Set(prev)
+      if (next.has(type)) next.delete(type)
+      else next.add(type)
+      return next
+    })
+  }, [])
+
+  const handleSelectAllTypes = useCallback(() => {
+    setActiveNodeTypes(new Set(nodeTypes))
+  }, [nodeTypes])
+
+  const handleClearAllTypes = useCallback(() => {
+    setActiveNodeTypes(new Set())
+  }, [])
+
+  const handleExportExcel = useCallback(() => {
+    let rows = filteredByType
+    if (globalFilter) {
+      const search = globalFilter.toLowerCase()
+      rows = rows.filter(r =>
+        r.node.name?.toLowerCase().includes(search) ||
+        r.node.type?.toLowerCase().includes(search)
+      )
+    }
+    exportToExcel(rows)
+  }, [filteredByType, globalFilter])
+
+  // ── End table view state ──────────────────────────────────────────────
 
   // Check if recon data exists
   const checkReconData = useCallback(async () => {
@@ -348,6 +434,7 @@ export default function GraphPage() {
     <div className={styles.page}>
       <GraphToolbar
         projectId={projectId || ''}
+        projectName={currentProject?.name}
         is3D={is3D}
         showLabels={showLabels}
         onToggle3D={setIs3D}
@@ -382,28 +469,51 @@ export default function GraphPage() {
         stealthMode={currentProject?.stealthMode}
       />
 
+      <ViewTabs
+        activeView={activeView}
+        onViewChange={setActiveView}
+        globalFilter={globalFilter}
+        onGlobalFilterChange={setGlobalFilter}
+        onExport={handleExportExcel}
+        totalRows={filteredByType.length}
+        filteredRows={textFilteredCount}
+      />
+
       <div ref={bodyRef} className={styles.body}>
-        <NodeDrawer
-          node={selectedNode}
-          isOpen={drawerOpen}
-          onClose={clearSelection}
-          onDeleteNode={handleDeleteNode}
-        />
+        {activeView === 'graph' && (
+          <NodeDrawer
+            node={selectedNode}
+            isOpen={drawerOpen}
+            onClose={clearSelection}
+            onDeleteNode={handleDeleteNode}
+          />
+        )}
 
         <div ref={contentRef} className={styles.content}>
-          <GraphCanvas
-            data={data}
-            isLoading={isLoading}
-            error={error}
-            projectId={projectId || ''}
-            is3D={is3D}
-            width={dimensions.width}
-            height={dimensions.height}
-            showLabels={showLabels}
-            selectedNode={selectedNode}
-            onNodeClick={selectNode}
-            isDark={isDark}
-          />
+          {activeView === 'graph' ? (
+            <GraphCanvas
+              data={filteredGraphData}
+              isLoading={isLoading}
+              error={error}
+              projectId={projectId || ''}
+              is3D={is3D}
+              width={dimensions.width}
+              height={dimensions.height}
+              showLabels={showLabels}
+              selectedNode={selectedNode}
+              onNodeClick={selectNode}
+              isDark={isDark}
+            />
+          ) : (
+            <DataTable
+              data={data}
+              isLoading={isLoading}
+              error={error}
+              rows={filteredByType}
+              globalFilter={globalFilter}
+              onGlobalFilterChange={setGlobalFilter}
+            />
+          )}
         </div>
 
       </div>
@@ -477,7 +587,17 @@ export default function GraphPage() {
         isLoading={isGvmLoading}
       />
 
-      <PageBottomBar data={data} is3D={is3D} showLabels={showLabels} />
+      <PageBottomBar
+        data={data}
+        is3D={is3D}
+        showLabels={showLabels}
+        activeView={activeView}
+        activeNodeTypes={activeNodeTypes}
+        nodeTypeCounts={nodeTypeCounts}
+        onToggleNodeType={handleToggleNodeType}
+        onSelectAllTypes={handleSelectAllTypes}
+        onClearAllTypes={handleClearAllTypes}
+      />
     </div>
   )
 }

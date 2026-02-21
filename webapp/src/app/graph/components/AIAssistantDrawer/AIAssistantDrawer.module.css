@@ -35,7 +35,7 @@
   align-items: center;
   justify-content: space-between;
   padding: var(--space-3) var(--space-4);
-  background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-primary) 40%, #5a1010 100%);
+  background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-primary) 40%, var(--color-crimson-800) 100%);
   border-bottom: 1px solid var(--border-default);
   flex-shrink: 0;
 }

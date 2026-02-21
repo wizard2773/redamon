@@ -50,11 +50,11 @@ ATTACK_PATH_CLASSIFICATION_PROMPT = """You are classifying a penetration testing
 
 ### brute_force_credential_guess
 - Password guessing / credential attacks
-- Using Metasploit auxiliary scanner modules (`auxiliary/scanner/*/login`)
+- Using THC Hydra for password brute-forcing (`execute_hydra`)
 - Keywords: brute force, crack password, credential attack, dictionary attack, password spray, guess password, wordlist, login attack
 - Services: SSH, FTP, RDP, VNC, SMB, MySQL, MSSQL, PostgreSQL, Telnet, POP3, IMAP, HTTP login, Tomcat
 - Requires: wordlists/credential files
-- Command: `run` (NOT exploit)
+- Tool: `execute_hydra` (NOT metasploit_console)
 - Example requests:
   - "Brute force SSH on 10.0.0.5"
   - "Try to crack the MySQL password"

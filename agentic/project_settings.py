@@ -68,12 +68,23 @@ DEFAULT_AGENT_SETTINGS: dict[str, Any] = {
         'execute_nuclei': ['informational', 'exploitation', 'post_exploitation'],
         'kali_shell': ['informational', 'exploitation', 'post_exploitation'],
         'execute_code': ['exploitation', 'post_exploitation'],
+        'execute_hydra': ['exploitation', 'post_exploitation'],
         'metasploit_console': ['exploitation', 'post_exploitation'],
         'msf_restart': ['exploitation', 'post_exploitation'],
         'web_search': ['informational', 'exploitation', 'post_exploitation'],
     },
 
-    # Brute Force
+    # Hydra Brute Force
+    'HYDRA_ENABLED': True,
+    'HYDRA_THREADS': 16,
+    'HYDRA_WAIT_BETWEEN_CONNECTIONS': 0,
+    'HYDRA_CONNECTION_TIMEOUT': 32,
+    'HYDRA_STOP_ON_FIRST_FOUND': True,
+    'HYDRA_EXTRA_CHECKS': 'nsr',
+    'HYDRA_VERBOSE': True,
+    'HYDRA_MAX_WORDLIST_ATTEMPTS': 3,
+
+    # Legacy (deprecated — kept for backward compat)
     'BRUTE_FORCE_MAX_WORDLIST_ATTEMPTS': 3,
     'BRUTEFORCE_SPEED': 5,
 }
@@ -126,6 +137,14 @@ def fetch_agent_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['TOOL_PHASE_MAP'] = project.get('agentToolPhaseMap', DEFAULT_AGENT_SETTINGS['TOOL_PHASE_MAP'])
     settings['BRUTE_FORCE_MAX_WORDLIST_ATTEMPTS'] = project.get('agentBruteForceMaxWordlistAttempts', DEFAULT_AGENT_SETTINGS['BRUTE_FORCE_MAX_WORDLIST_ATTEMPTS'])
     settings['BRUTEFORCE_SPEED'] = project.get('agentBruteforceSpeed', DEFAULT_AGENT_SETTINGS['BRUTEFORCE_SPEED'])
+    settings['HYDRA_ENABLED'] = project.get('hydraEnabled', DEFAULT_AGENT_SETTINGS['HYDRA_ENABLED'])
+    settings['HYDRA_THREADS'] = project.get('hydraThreads', DEFAULT_AGENT_SETTINGS['HYDRA_THREADS'])
+    settings['HYDRA_WAIT_BETWEEN_CONNECTIONS'] = project.get('hydraWaitBetweenConnections', DEFAULT_AGENT_SETTINGS['HYDRA_WAIT_BETWEEN_CONNECTIONS'])
+    settings['HYDRA_CONNECTION_TIMEOUT'] = project.get('hydraConnectionTimeout', DEFAULT_AGENT_SETTINGS['HYDRA_CONNECTION_TIMEOUT'])
+    settings['HYDRA_STOP_ON_FIRST_FOUND'] = project.get('hydraStopOnFirstFound', DEFAULT_AGENT_SETTINGS['HYDRA_STOP_ON_FIRST_FOUND'])
+    settings['HYDRA_EXTRA_CHECKS'] = project.get('hydraExtraChecks', DEFAULT_AGENT_SETTINGS['HYDRA_EXTRA_CHECKS'])
+    settings['HYDRA_VERBOSE'] = project.get('hydraVerbose', DEFAULT_AGENT_SETTINGS['HYDRA_VERBOSE'])
+    settings['HYDRA_MAX_WORDLIST_ATTEMPTS'] = project.get('hydraMaxWordlistAttempts', DEFAULT_AGENT_SETTINGS['HYDRA_MAX_WORDLIST_ATTEMPTS'])
     settings['STEALTH_MODE'] = project.get('stealthMode', DEFAULT_AGENT_SETTINGS['STEALTH_MODE'])
 
     logger.info(f"Loaded {len(settings)} agent settings for project {project_id}")
@@ -236,3 +255,27 @@ def get_allowed_tools_for_phase(phase: str) -> list:
         for tool_name, allowed_phases in tool_phase_map.items()
         if phase in allowed_phases
     ]
+
+
+def get_hydra_flags_from_settings() -> str:
+    """Build Hydra CLI flags string from project settings.
+
+    Returns a pre-formatted flag string like: -t 16 -f -e nsr -V
+    Injected into brute force prompts so the LLM uses project-configured values.
+    """
+    parts = []
+    parts.append(f"-t {get_setting('HYDRA_THREADS', 16)}")
+    wait = get_setting('HYDRA_WAIT_BETWEEN_CONNECTIONS', 0)
+    if wait > 0:
+        parts.append(f"-W {wait}")
+    timeout = get_setting('HYDRA_CONNECTION_TIMEOUT', 32)
+    if timeout != 32:
+        parts.append(f"-w {timeout}")
+    if get_setting('HYDRA_STOP_ON_FIRST_FOUND', True):
+        parts.append("-f")
+    extra = get_setting('HYDRA_EXTRA_CHECKS', 'nsr')
+    if extra:
+        parts.append(f"-e {extra}")
+    if get_setting('HYDRA_VERBOSE', True):
+        parts.append("-V")
+    return " ".join(parts)

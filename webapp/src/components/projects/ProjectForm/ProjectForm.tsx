@@ -20,7 +20,7 @@ import { SecurityChecksSection } from './sections/SecurityChecksSection'
 import { GithubSection } from './sections/GithubSection'
 import { AgentBehaviourSection } from './sections/AgentBehaviourSection'
 import { CveExploitSection } from './sections/CveExploitSection'
-import { BruteForceSection } from './sections/BruteForceSection'
+import { HydraSection } from './sections/BruteForceSection'
 import { GvmScanSection } from './sections/GvmScanSection'
 
 type ProjectFormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
@@ -325,7 +325,7 @@ export function ProjectForm({
         {activeTab === 'attack' && (
           <>
             <CveExploitSection data={formData} updateField={updateField} />
-            <BruteForceSection data={formData} updateField={updateField} />
+            <HydraSection data={formData} updateField={updateField} />
           </>
         )}
           </div>

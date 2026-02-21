@@ -78,8 +78,10 @@ export const SELECTION_COLORS = {
 export const BACKGROUND_COLORS = {
   dark: {
     graph: '#0a0a0a',
+    label: '#ffffff',
   },
   light: {
-    graph: '#f3f4f6', // gray-100
+    graph: '#ffffff',
+    label: '#3f3f46', // gray-700
   },
 } as const

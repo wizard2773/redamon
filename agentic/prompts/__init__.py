@@ -37,10 +37,10 @@ from .cve_exploit_prompts import (
     NO_MODULE_FALLBACK_STATELESS,
 )
 
-# Re-export from brute force credential guess prompts
+# Re-export from Hydra brute force prompts
 from .brute_force_credential_guess_prompts import (
-    BRUTE_FORCE_CREDENTIAL_GUESS_TOOLS,
-    BRUTE_FORCE_CREDENTIAL_GUESS_WORDLIST_GUIDANCE,
+    HYDRA_BRUTE_FORCE_TOOLS,
+    HYDRA_WORDLIST_GUIDANCE,
 )
 
 # Re-export from post-exploitation prompts
@@ -54,7 +54,7 @@ from .stealth_rules import STEALTH_MODE_RULES
 
 # Import utilities
 from utils import get_session_config_prompt
-from project_settings import get_setting, get_allowed_tools_for_phase
+from project_settings import get_setting, get_allowed_tools_for_phase, get_hydra_flags_from_settings
 
 
 def _msf_search_failed(execution_trace: list) -> bool:
@@ -146,38 +146,41 @@ def get_phase_tools(
         parts.append(build_informational_tool_descriptions(allowed_tools))
 
     elif phase == "exploitation":
-        # Only show exploitation workflows if metasploit_console is allowed
-        if "metasploit_console" in allowed_tools:
-            # SELECT WORKFLOW BASED ON ATTACK PATH TYPE
-            if attack_path_type == "brute_force_credential_guess":
-                # Format with max attempts from params
-                parts.append(BRUTE_FORCE_CREDENTIAL_GUESS_TOOLS.format(
-                    brute_force_max_attempts=get_setting('BRUTE_FORCE_MAX_WORDLIST_ATTEMPTS', 3),
-                    bruteforce_speed=get_setting('BRUTEFORCE_SPEED', 5)
-                ))
-                # Add wordlist reference guide
-                parts.append(BRUTE_FORCE_CREDENTIAL_GUESS_WORDLIST_GUIDANCE)
-            else:
-                # CVE-based exploitation (default)
-                parts.append(CVE_EXPLOIT_TOOLS)
-                # Select payload guidance based on post_expl_type
-                payload_guidance = CVE_PAYLOAD_GUIDANCE_STATEFULL if is_statefull else CVE_PAYLOAD_GUIDANCE_STATELESS
-                parts.append(payload_guidance)
-                # No-module fallback: only inject full workflow AFTER msf search returned no results
-                # This saves ~1,100-1,350 tokens when a module IS found
-                if _msf_search_failed(execution_trace or []):
-                    if is_statefull:
-                        parts.append(NO_MODULE_FALLBACK_STATEFULL)
-                    else:
-                        parts.append(NO_MODULE_FALLBACK_STATELESS)
-                # Add pre-configured session settings for statefull mode
-                # (AFTER fallback so agent sees LHOST/LPORT/BIND values)
+        # SELECT WORKFLOW BASED ON ATTACK PATH TYPE
+        if attack_path_type == "brute_force_credential_guess" and "execute_hydra" in allowed_tools:
+            # Hydra-based brute force workflow
+            hydra_flags = get_hydra_flags_from_settings()
+            # Build flags without -t for templates that override thread count per protocol
+            import re as _re
+            hydra_flags_no_t = _re.sub(r'-t\s+\d+\s*', '', hydra_flags).strip()
+            parts.append(HYDRA_BRUTE_FORCE_TOOLS.format(
+                hydra_max_attempts=get_setting('HYDRA_MAX_WORDLIST_ATTEMPTS', 3),
+                hydra_flags=hydra_flags,
+                hydra_flags_no_t=hydra_flags_no_t
+            ))
+            # Add wordlist reference guide
+            parts.append(HYDRA_WORDLIST_GUIDANCE)
+        elif "metasploit_console" in allowed_tools:
+            # CVE-based exploitation (default)
+            parts.append(CVE_EXPLOIT_TOOLS)
+            # Select payload guidance based on post_expl_type
+            payload_guidance = CVE_PAYLOAD_GUIDANCE_STATEFULL if is_statefull else CVE_PAYLOAD_GUIDANCE_STATELESS
+            parts.append(payload_guidance)
+            # No-module fallback: only inject full workflow AFTER msf search returned no results
+            # This saves ~1,100-1,350 tokens when a module IS found
+            if _msf_search_failed(execution_trace or []):
                 if is_statefull:
-                    session_config = get_session_config_prompt()
-                    if session_config:
-                        parts.append(session_config)
+                    parts.append(NO_MODULE_FALLBACK_STATEFULL)
+                else:
+                    parts.append(NO_MODULE_FALLBACK_STATELESS)
+            # Add pre-configured session settings for statefull mode
+            # (AFTER fallback so agent sees LHOST/LPORT/BIND values)
+            if is_statefull:
+                session_config = get_session_config_prompt()
+                if session_config:
+                    parts.append(session_config)
         else:
-            # metasploit_console disabled — show only informational tool descriptions
+            # No exploitation tools available — show only informational tool descriptions
             parts.append(build_informational_tool_descriptions(allowed_tools))
 
         # Add note about post-exploitation availability
@@ -225,9 +228,9 @@ __all__ = [
     "CVE_PAYLOAD_GUIDANCE_STATELESS",
     "NO_MODULE_FALLBACK_STATEFULL",
     "NO_MODULE_FALLBACK_STATELESS",
-    # Brute force credential guess
-    "BRUTE_FORCE_CREDENTIAL_GUESS_TOOLS",
-    "BRUTE_FORCE_CREDENTIAL_GUESS_WORDLIST_GUIDANCE",
+    # Hydra brute force
+    "HYDRA_BRUTE_FORCE_TOOLS",
+    "HYDRA_WORDLIST_GUIDANCE",
     # Post-exploitation
     "POST_EXPLOITATION_TOOLS_STATEFULL",
     "POST_EXPLOITATION_TOOLS_STATELESS",

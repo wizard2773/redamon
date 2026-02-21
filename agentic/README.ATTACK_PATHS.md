@@ -2,7 +2,7 @@
 
 Comprehensive documentation of all Metasploit attack path categories and the proposed Agent Routing system for intelligent attack chain orchestration.
 
-> **Context**: The RedAmon agent supports CVE-based exploitation and brute force credential guess chains, with no-module fallback workflows using nuclei, curl, code execution, and Kali shell tools. This document defines all possible attack path categories to enable evolution toward a multi-path routing system.
+> **Context**: The RedAmon agent supports CVE-based exploitation and Hydra brute force credential guess chains, with no-module fallback workflows using nuclei, curl, code execution, and Kali shell tools. This document defines all possible attack path categories to enable evolution toward a multi-path routing system.
 
 ---
 
@@ -73,7 +73,7 @@ The orchestrator (`orchestrator.py`) implements two classified attack path categ
 
 ### Remaining Limitations
 
-1. **Two Attack Paths**: Only CVE exploit and brute force credential guess are fully implemented
+1. **Two Attack Paths**: Only CVE exploit and Hydra brute force credential guess are fully implemented
 2. **No Social Engineering**: Phishing, client-side attacks not yet supported as classified paths
 3. **No DoS/Fuzzing Chains**: DoS and fuzzing workflows not yet implemented as classified paths
 4. **No Credential Capture**: MITM/capture chains not yet implemented
@@ -1041,7 +1041,7 @@ INTENT_ROUTER_PROMPT = """Analyze the user request and determine the attack path
 | Category | Keywords | Entry Module Pattern |
 |----------|----------|---------------------|
 | cve_exploit | CVE-, MS17-, exploit, vulnerability, pwn, hack | exploit/* |
-| brute_force | brute, password, credential, login, crack, spray | auxiliary/scanner/*/login |
+| brute_force | brute, password, credential, login, crack, spray | execute_hydra (THC Hydra) |
 | social_engineering | phish, social, email, campaign, usb, malicious | auxiliary/server/* or exploit/multi/handler |
 | dos_attack | dos, denial, crash, disrupt, flood | auxiliary/dos/* |
 | fuzzing | fuzz, crash, discover, overflow, bug | auxiliary/fuzzers/* |
@@ -1077,19 +1077,17 @@ CHAIN_WORKFLOWS = {
     "cve_exploit": CVE_EXPLOIT_TOOLS,  # ✅ Implemented
     # + NO_MODULE_FALLBACK_STATEFULL / NO_MODULE_FALLBACK_STATELESS (✅ auto-injected when MSF search fails)
 
-    "brute_force": """  # ✅ Implemented as BRUTE_FORCE_CREDENTIAL_GUESS_TOOLS
-## Brute Force Attack Workflow
+    "brute_force": """  # ✅ Implemented as HYDRA_BRUTE_FORCE_TOOLS (THC Hydra)
+## Hydra Brute Force Workflow
 
-1. `use auxiliary/scanner/<protocol>/<protocol>_login`
-2. `show options`
-3. `set RHOSTS <target>`
-4. `set USER_FILE /path/to/users.txt` OR `set USERNAME <user>`
-5. `set PASS_FILE /path/to/passwords.txt` OR `set PASSWORD <pass>`
-6. `set BRUTEFORCE_SPEED 3`
-7. `set STOP_ON_SUCCESS true`
-8. `run`
+1. Select protocol from service table (ssh, ftp, rdp, smb, mysql, etc.)
+2. Build Hydra command with project-configured flags (-t, -f, -e, -V, etc.)
+3. Execute via `execute_hydra`: `-l <user> -P <wordlist> <flags> <protocol>://<target>`
+4. Parse output for `[port][protocol] host: ... login: ... password: ...`
+5. If credentials found → establish session via kali_shell (sshpass) or metasploit_console (psexec)
+6. If failed → retry with different wordlist strategy (up to HYDRA_MAX_WORDLIST_ATTEMPTS)
 
-**Note**: Use `run` NOT `exploit`. No payload selection needed.
+**Note**: Uses `execute_hydra` NOT `metasploit_console`. Hydra is stateless — runs and exits.
 """,
 
     "social_engineering": """
@@ -1206,7 +1204,7 @@ Some attack paths naturally chain into others:
 - [x] Retry logic with exponential backoff for resilience
 
 ### Phase 2: Chain-Specific Workflows (COMPLETED for brute_force_credential_guess)
-- [x] Created `BRUTE_FORCE_CREDENTIAL_GUESS_TOOLS` prompt (`prompts/brute_force_credential_guess_prompts.py`)
+- [x] Created `HYDRA_BRUTE_FORCE_TOOLS` prompt (`prompts/brute_force_credential_guess_prompts.py`) — THC Hydra replaces Metasploit auxiliary scanners
 - [ ] Create `DOS_TOOLS` prompt
 - [ ] Create `CAPTURE_TOOLS` prompt
 - [ ] Create `SOCIAL_ENGINEERING_TOOLS` prompt

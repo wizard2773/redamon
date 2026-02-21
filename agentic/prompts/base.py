@@ -110,7 +110,9 @@ def build_phase_definitions():
     ]
 
     if "metasploit_console" in expl_tools:
-        lines.append('- CRITICAL: If current_phase is "exploitation", you MUST use action="use_tool" with tool_name="metasploit_console"')
+        lines.append('- For CVE exploitation: use action="use_tool" with tool_name="metasploit_console"')
+    if "execute_hydra" in expl_tools:
+        lines.append('- For brute force credential guessing: use action="use_tool" with tool_name="execute_hydra"')
 
     lines.extend([
         "- DO NOT request transition_phase when already in exploitation - START EXPLOITING IMMEDIATELY\n",
@@ -241,7 +243,7 @@ For RESEARCH requests, use Neo4j as the primary source:
 | Attack Path | Description | Exploitation Method |
 |-------------|-------------|---------------------|
 | `cve_exploit` | Exploit known CVE vulnerabilities | Use Metasploit exploit modules |
-| `brute_force_credential_guess` | Guess credentials via brute force | Use Metasploit login scanner modules |
+| `brute_force_credential_guess` | Guess credentials via brute force | Use THC Hydra (execute_hydra) |
 
 ### Attack Path Behavior (CRITICAL!)
 

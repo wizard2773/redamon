@@ -117,3 +117,70 @@
   color: var(--text-primary);
   font-family: var(--font-mono);
 }
+
+/* Table view: toggle chip styles */
+
+.chipActions {
+  display: flex;
+  gap: var(--space-1);
+  flex-shrink: 0;
+}
+
+.chipAction {
+  background: transparent;
+  border: none;
+  color: var(--accent-primary);
+  font-size: 10px;
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  padding: var(--space-0-5) var(--space-1);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.chipAction:hover {
+  color: var(--text-primary);
+}
+
+.typeChip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2) 2px var(--space-1-5);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  color: var(--text-tertiary);
+  font-size: 10px;
+  cursor: pointer;
+  transition: opacity 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  opacity: 0.5;
+  white-space: nowrap;
+}
+
+.typeChip:hover {
+  opacity: 0.8;
+}
+
+.typeChipActive {
+  opacity: 1;
+  border-color: var(--chip-color);
+  color: var(--text-secondary);
+}
+
+.chipDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--chip-color);
+  flex-shrink: 0;
+}
+
+.chipLabel {
+  font-weight: var(--font-medium);
+}
+
+.chipCount {
+  color: var(--text-tertiary);
+  font-size: 9px;
+}

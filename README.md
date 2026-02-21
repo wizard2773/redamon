@@ -363,7 +363,7 @@ The agent progresses through three distinct operational phases, each with differ
 **Exploitation Phase** — When the agent identifies a viable attack path, it requests a phase transition. This requires **user approval** (configurable). Once approved, the agent gains access to the Metasploit console via MCP and can execute exploits. Two attack paths are supported:
 
 - **CVE Exploit** — the agent searches for a matching Metasploit module, configures the payload (reverse shell or bind shell), sets target parameters, and fires the exploit. For statefull mode, it establishes a Meterpreter session; for stateless mode, it executes one-shot commands.
-- **Brute Force Credential Guess** — the agent selects appropriate wordlists and attacks services like SSH, FTP, or MySQL, with configurable maximum attempts per wordlist.
+- **Hydra Brute Force** — the agent uses THC Hydra to brute force credentials against services like SSH, FTP, RDP, SMB, MySQL, HTTP forms, and 50+ other protocols. Hydra settings (threads, timeouts, extra checks) are fully configurable per project. After credentials are discovered, the agent establishes access via `sshpass`, database clients, or Metasploit psexec.
 
 When an exploit succeeds, the agent automatically creates an **Exploit node** in the Neo4j graph — recording the attack type, target IP, port, CVE IDs, Metasploit module used, payload, session ID, and any credentials discovered. This node is linked to the targeted IP, the exploited CVE, and the entry port, making every successful compromise a permanent, queryable part of the attack surface graph.
 
@@ -407,10 +407,11 @@ The agent executes security tools through the **Model Context Protocol**, with e
 | **execute_nuclei** | Vulnerability scanning with 9,000+ templates | All phases |
 | **kali_shell** | Direct Kali Linux shell commands (arbitrary command execution) | All phases |
 | **execute_code** | Run custom Python/Bash exploit scripts on the Kali sandbox | Exploitation & Post-exploitation |
+| **execute_hydra** | THC Hydra brute force password cracking (50+ protocols) | Exploitation & Post-exploitation |
 | **metasploit_console** | Exploit execution, payload delivery, sessions | Exploitation & Post-exploitation |
 | **msf_restart** | Restart Metasploit RPC daemon when it becomes unresponsive | Exploitation & Post-exploitation |
 
-For long-running Metasploit operations (e.g., brute force with large wordlists), the agent streams progress updates every 5 seconds to the WebSocket, so you see output in real time.
+For long-running operations (e.g., Hydra brute force with large wordlists, Metasploit exploits), the agent streams progress updates every 5 seconds to the WebSocket, so you see output in real time.
 
 #### Kali Sandbox Tooling
 
@@ -472,7 +473,7 @@ The architecture supports **10 attack path categories** (CVE exploitation, brute
 | # | Attack Path | Description | Module Type | Post-Exploitation |
 |---|-------------|-------------|-------------|-------------------|
 | 1 | **CVE-Based Exploitation** | Exploits known vulnerabilities identified by CVE identifier. The agent searches for a matching Metasploit exploit module, configures target parameters and payload (reverse/bind shell), and fires the exploit. Supports both statefull (Meterpreter session) and stateless (one-shot command) post-exploitation. | `exploit/*` | Yes |
-| 2 | **Brute Force / Credential Guess** | Password guessing attacks against authentication services (SSH, FTP, MySQL, SMB, HTTP, and more). The agent selects the appropriate `auxiliary/scanner/*/login` module, configures wordlists from Metasploit's built-in collection, and runs the attack. When SSH brute force succeeds with `CreateSession: true`, the agent transitions to a shell-based post-exploitation phase. | `auxiliary/scanner/*` | Sometimes (SSH) |
+| 2 | **Hydra Brute Force** | Password guessing attacks against 50+ authentication protocols (SSH, FTP, RDP, SMB, MySQL, HTTP forms, and more). The agent uses THC Hydra (`execute_hydra`) with configurable threads, timeouts, and retry strategies. After credentials are discovered, the agent establishes access via `sshpass` (SSH), database clients, or Metasploit psexec (SMB). | `execute_hydra` | Sometimes (SSH, SMB) |
 
 For full details on all 10 attack path categories, the intent router architecture, chain-specific workflows, and the implementation roadmap, see the **[Attack Paths Documentation](agentic/README.ATTACK_PATHS.md)**.
 
@@ -984,14 +985,20 @@ Controls how reverse/bind shell payloads connect. **Reverse**: target connects b
 | Require Approval for Exploitation | true | User confirmation before transitioning to exploitation phase |
 | Require Approval for Post-Exploitation | true | User confirmation before transitioning to post-exploitation phase |
 
-**Brute Force Credential Guess:**
+**Hydra Brute Force:**
 
-Configure brute force credential guessing attack parameters including speed throttling and retry limits.
+Configure THC Hydra brute force password cracking settings. Hydra supports 50+ protocols including SSH, FTP, RDP, SMB, HTTP forms, databases, and more.
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| Bruteforce Speed | 5 | Delay between login attempts. `5` — No delay (Fastest), `4` — 0.1s (Aggressive), `3` — 0.5s (Normal), `2` — 1s (Polite), `1` — 15s (Sneaky), `0` — 5 min (Glacial/Stealth). Lower values reduce detection risk but take longer |
-| Brute Force Max Wordlist Attempts | 3 | Wordlist combinations to try before giving up (1-10) |
+| Hydra Enabled | true | Enable/disable Hydra brute force tool for exploitation and post-exploitation phases |
+| Threads (-t) | 16 | Parallel connections per target. Protocol limits: SSH max 4, RDP max 1, VNC max 4 |
+| Wait Between Connections (-W) | 0 | Seconds between each connection per task. 0 = no delay |
+| Connection Timeout (-w) | 32 | Max seconds to wait for a response from the target |
+| Stop On First Found (-f) | true | Stop immediately when valid credentials are found |
+| Extra Password Checks (-e) | nsr | Additional password variations: n=null/empty, s=username-as-password, r=reversed username |
+| Verbose Output (-V) | true | Show each login attempt in output for progress tracking |
+| Max Wordlist Attempts | 3 | How many wordlist strategies to try before giving up (1-10) |
 
 **Retries, Logging & Debug:**
 

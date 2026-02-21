@@ -11,7 +11,7 @@ export function Footer() {
         <span className={styles.copyright}>
           © {currentYear} RedAmon. All rights reserved.
         </span>
-        <span className={styles.version}>v1.0.0</span>
+        <span className={styles.version}>v1.3.0</span>
       </div>
     </footer>
   )

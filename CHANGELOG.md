@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Prompt Token Optimization** — lazy no-module fallback injection (saves ~1.1K tokens), compact formatting for older execution trace steps (full output only for last 5), trimmed rarely-used wordlist tables
 - **Metasploit Prewarm** — pre-initializes Metasploit console on agent startup to reduce first-use latency
 - **Markdown Report Export** — download the full agent conversation as a formatted Markdown file
-- **Brute Force & CVE Exploit Settings** — new Project Settings sections for configuring brute force speed/wordlist limits and CVE exploit attack path parameters
+- **Hydra Brute Force & CVE Exploit Settings** — new Project Settings sections for configuring Hydra brute force (threads, timeouts, extra checks, wordlist limits) and CVE exploit attack path parameters
 - **Node.js Deserialization Guinea Pig** — new test environment for CVE-2017-5941 (node-serialize RCE)
 - **Phase Tools Tooltip** — hover on phase badges to see which MCP tools are available in that phase
 - **GitHub Secrets Suggestion** — new suggestion button in AI Assistant to leverage discovered GitHub secrets during exploitation
@@ -99,7 +99,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Attack Path System** — agent now supports dynamic attack path selection with two built-in paths:
   - **CVE Exploit** — automated Metasploit module search, payload configuration, and exploit execution
-  - **Brute Force Credential Guess** — service-level brute force with configurable wordlists and max attempts per service
+  - **Hydra Brute Force** — THC Hydra-based credential guessing with configurable threads, timeouts, extra checks, and wordlist retry strategies
 - **Agent Guidance** — send real-time steering messages to the agent while it works, injected into the system prompt before the next reasoning step
 - **Agent Stop & Resume** — stop the agent at any point and resume from the last LangGraph checkpoint with full context preserved
 - **Project Creation UI** — full frontend project form with all configurable settings sections:

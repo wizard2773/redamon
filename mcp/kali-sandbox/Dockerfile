@@ -38,6 +38,8 @@ RUN apt-get install -y --fix-missing \
     # Exploitation & post-exploitation
     exploitdb \
     john \
+    hydra \
+    sshpass \
     smbclient \
     sqlmap \
     jq \
@@ -91,7 +93,7 @@ RUN chmod +x /opt/entrypoint.sh
 WORKDIR /opt/mcp_servers
 
 # Expose ports for MCP servers (SSE/HTTP transport)
-EXPOSE 8000 8002 8003 8004
+EXPOSE 8000 8002 8003 8004 8014
 
 # Initialize Metasploit database (speeds up first run)
 RUN msfdb init || true

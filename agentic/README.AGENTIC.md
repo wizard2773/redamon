@@ -340,7 +340,7 @@ When a new objective is detected, the system uses an LLM-based classifier to det
 | Type | Description | Example Objective |
 |------|-------------|-------------------|
 | `cve_exploit` | CVE-based exploitation using known vulnerabilities | "Exploit CVE-2021-41773 on 192.168.1.100" |
-| `brute_force_credential_guess` | Brute force / credential attacks against services | "Try SSH brute force on 192.168.1.100" |
+| `brute_force_credential_guess` | Hydra brute force / credential attacks against services | "Try SSH brute force on 192.168.1.100" |
 
 ### Classification Flow
 
@@ -389,7 +389,7 @@ Based on the classified attack path, `get_phase_tools()` assembles different pro
 | Phase | CVE Exploit Path | Brute Force Path |
 |-------|-----------------|------------------|
 | **Informational** | Dynamic recon tool descriptions (from registry) | Dynamic recon tool descriptions (from registry) |
-| **Exploitation** | `CVE_EXPLOIT_TOOLS` + payload guidance + no-module fallback (if MSF search failed) | `BRUTE_FORCE_CREDENTIAL_GUESS_TOOLS` + wordlist guidance |
+| **Exploitation** | `CVE_EXPLOIT_TOOLS` + payload guidance + no-module fallback (if MSF search failed) | `HYDRA_BRUTE_FORCE_TOOLS` + wordlist guidance |
 | **Post-Exploitation** | `POST_EXPLOITATION_TOOLS_STATEFULL` (unified for Meterpreter and shell sessions) | `POST_EXPLOITATION_TOOLS_STATEFULL` (same unified prompt) |
 
 **No-Module Fallback**: When a `search CVE-*` command returns no results in Metasploit, the system injects a fallback workflow (`NO_MODULE_FALLBACK_STATEFULL` or `NO_MODULE_FALLBACK_STATELESS`) that guides the agent to exploit the CVE using `execute_curl`, `execute_code`, `kali_shell`, or `execute_nuclei` instead. This saves ~1,100-1,350 tokens when a module IS found.
@@ -418,15 +418,15 @@ flowchart TB
     style PAUSE fill:#FFD700
 ```
 
-This prevents exploitation failures by ensuring reverse/bind payload parameters are available before the agent attempts to run Metasploit exploits. Brute force attacks bypass this check since they create direct shell sessions without needing LHOST/LPORT.
+This prevents exploitation failures by ensuring reverse/bind payload parameters are available before the agent attempts to run Metasploit exploits. Hydra brute force attacks bypass this check since they use `execute_hydra` (stateless) and establish sessions separately via `sshpass` or database clients.
 
 ### Credential Detection
 
-During brute force attacks, the think node's inline output analysis automatically extracts discovered credentials:
+During Hydra brute force attacks, the think node's inline output analysis automatically extracts discovered credentials:
 
 ```mermaid
 flowchart LR
-    OUTPUT[Tool output from<br/>auxiliary/scanner module] --> ANALYSIS[Think node inline analysis<br/>LLM extracts credentials]
+    OUTPUT[Tool output from<br/>execute_hydra] --> ANALYSIS[Think node inline analysis<br/>LLM extracts credentials]
 
     ANALYSIS --> FOUND{Credentials found?}
     FOUND -->|Yes| MERGE[Merge into TargetInfo.credentials]
@@ -1023,7 +1023,8 @@ sequenceDiagram
 sequenceDiagram
     participant U as User
     participant A as Agent
-    participant MSF as Metasploit Server
+    participant H as Hydra (execute_hydra)
+    participant K as Kali Shell
     participant T as Target
 
     U->>A: "Try SSH brute force on 192.168.1.100"
@@ -1036,37 +1037,27 @@ sequenceDiagram
     U->>A: Approve transition
 
     Note over A: Phase: Exploitation (brute_force path)
-    Note over A: No LHOST/LPORT needed (direct shell)
+    Note over A: No LHOST/LPORT needed (Hydra is stateless)
 
-    A->>MSF: use auxiliary/scanner/ssh/ssh_login
-    MSF-->>A: Module loaded
+    A->>H: -l ubuntu -P unix_passwords.txt -t 4 -f -e nsr -V ssh://192.168.1.100
+    H->>T: Try credentials (parallel, 4 threads)
+    T-->>H: [22][ssh] host: 192.168.1.100 login: admin password: password123
+    H-->>A: 1 valid password found
 
-    A->>MSF: set RHOSTS 192.168.1.100
-    MSF-->>A: RHOSTS => 192.168.1.100
+    Note over A: Credentials detected via inline output analysis
 
-    A->>MSF: set USER_FILE /usr/share/wordlists/...
-    MSF-->>A: USER_FILE set
-
-    A->>MSF: set PASS_FILE /usr/share/wordlists/...
-    MSF-->>A: PASS_FILE set
-
-    A->>MSF: set CreateSession true
-    MSF-->>A: CreateSession => true
-
-    A->>MSF: run
-    MSF->>T: Try credentials
-    T-->>MSF: [+] Success: 'admin:password123'
-    MSF-->>A: Credential found + session created
-
-    Note over A: Credentials + session detected via inline output analysis
+    A->>K: sshpass -p 'password123' ssh admin@192.168.1.100 'whoami && id'
+    K->>T: SSH login with discovered credentials
+    T-->>K: "admin" + uid info
+    K-->>A: SSH access confirmed
 
     A->>A: Request phase transition to post_exploitation
     U->>A: Approve transition
 
-    Note over A: Phase: Post-Exploitation (Shell session)
-    A->>MSF: msf_session_run(1, "whoami")
-    MSF->>T: Execute command via SSH session
-    T-->>MSF: "root"
+    Note over A: Phase: Post-Exploitation (Shell via sshpass)
+    A->>K: sshpass -p 'password123' ssh admin@192.168.1.100 'uname -a'
+    K->>T: Execute command via SSH
+    T-->>K: "Linux target 5.15.0..."
     MSF-->>A: Command output
 ```
 
@@ -1411,7 +1402,14 @@ flowchart LR
 | `LPORT` | `null` | Attacker port for reverse payloads |
 | `BIND_PORT_ON_TARGET` | `4444` | Port opened on target for bind payloads |
 | `PAYLOAD_USE_HTTPS` | `false` | Use HTTPS for staged payloads |
-| `BRUTE_FORCE_MAX_WORDLIST_ATTEMPTS` | `3` | Max wordlist iterations for brute force |
+| `HYDRA_ENABLED` | `true` | Enable/disable THC Hydra brute force tool |
+| `HYDRA_THREADS` | `16` | Parallel connections per target (-t). SSH max 4, RDP max 1 |
+| `HYDRA_WAIT_BETWEEN_CONNECTIONS` | `0` | Seconds between connections per task (-W) |
+| `HYDRA_CONNECTION_TIMEOUT` | `32` | Max seconds to wait for response (-w) |
+| `HYDRA_STOP_ON_FIRST_FOUND` | `true` | Stop on first valid credential (-f) |
+| `HYDRA_EXTRA_CHECKS` | `"nsr"` | Extra checks: n=null, s=login-as-pass, r=reversed (-e) |
+| `HYDRA_VERBOSE` | `true` | Show each login attempt (-V) |
+| `HYDRA_MAX_WORDLIST_ATTEMPTS` | `3` | Max wordlist strategies before giving up |
 | `INFORMATIONAL_SYSTEM_PROMPT` | `""` | Custom system prompt injected during informational phase |
 | `EXPL_SYSTEM_PROMPT` | `""` | Custom system prompt injected during exploitation phase |
 | `POST_EXPL_SYSTEM_PROMPT` | `""` | Custom system prompt injected during post-exploitation phase |

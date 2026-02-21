@@ -205,7 +205,7 @@ export function GraphCanvas2D({
           ctx.font = `${fontSize}px Sans-Serif`
           ctx.textAlign = 'center'
           ctx.textBaseline = 'top'
-          ctx.fillStyle = '#ffffff'
+          ctx.fillStyle = isDark ? BACKGROUND_COLORS.dark.label : BACKGROUND_COLORS.light.label
           ctx.fillText(label, graphNode.x, graphNode.y + nodeSize + 2)
         }
       }}

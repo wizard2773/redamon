@@ -1152,11 +1152,12 @@ class AgentOrchestrator:
             extra_updates["msf_session_reset_done"] = True
             logger.info(f"[{session_key}] Metasploit soft reset complete")
 
-        # Check if this is a long-running metasploit command
+        # Check if this is a long-running command that needs progress streaming
         is_long_running_msf = (
             tool_name == "metasploit_console" and
             any(cmd in (tool_args.get("command", "") or "").lower() for cmd in ["run", "exploit"])
         )
+        is_long_running_hydra = (tool_name == "execute_hydra")
 
         # Execute the tool (with progress streaming for long-running commands)
         if is_long_running_msf and self._streaming_callback:
@@ -1166,6 +1167,15 @@ class AgentOrchestrator:
                 tool_args,
                 phase,
                 progress_callback=self._streaming_callback.on_tool_output_chunk
+            )
+        elif is_long_running_hydra and self._streaming_callback:
+            logger.info(f"[{user_id}/{project_id}/{session_id}] Using execute_with_progress for Hydra brute force")
+            result = await self.tool_executor.execute_with_progress(
+                tool_name,
+                tool_args,
+                phase,
+                progress_callback=self._streaming_callback.on_tool_output_chunk,
+                progress_url=os.environ.get('MCP_HYDRA_PROGRESS_URL', 'http://kali-sandbox:8014/progress')
             )
         else:
             result = await self.tool_executor.execute(tool_name, tool_args, phase)
