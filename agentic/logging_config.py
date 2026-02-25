@@ -3,7 +3,6 @@ RedAmon Agent Logging Configuration
 
 Configures logging with file rotation, console output, and proper formatting.
 """
-
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path

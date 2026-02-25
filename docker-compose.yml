@@ -243,11 +243,9 @@ services:
       - ./github_secret_hunt:/app/github_secret_hunt:ro
       - ./github_secret_hunt/output:/app/github_secret_hunt/output:rw
     environment:
-      RECON_PATH: ${PWD}/recon
+      # Host paths are auto-detected from container mounts (no hardcoded paths needed)
       RECON_IMAGE: redamon-recon:latest
-      GVM_SCAN_PATH: ${PWD}/gvm_scan
       GVM_IMAGE: redamon-vuln-scanner:latest
-      GITHUB_HUNT_PATH: ${PWD}/github_secret_hunt
       GITHUB_HUNT_IMAGE: redamon-github-hunter:latest
       # Forwarded to spawned recon containers (host network, so localhost)
       NVD_API_KEY: ${NVD_API_KEY:-}
