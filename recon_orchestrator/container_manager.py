@@ -140,7 +140,7 @@ class ContainerManager:
         project_id: str,
         user_id: str,
         webapp_api_url: str,
-        recon_path: str = "/home/samuele/Progetti didattici/RedAmon/recon",
+        recon_path: str,
     ) -> ReconState:
         """Start a recon container for a project"""
 
@@ -200,7 +200,7 @@ class ContainerManager:
                     "NEO4J_PASSWORD": os.environ.get("NEO4J_PASSWORD", ""),
                 },
                 volumes={
-                    "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "ro"},
+                    "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},
                     # Mount source code for development (no rebuild needed)
                     # Note: rw needed because output/data are subdirectories
                     f"{recon_path}": {"bind": "/app/recon", "mode": "rw"},
