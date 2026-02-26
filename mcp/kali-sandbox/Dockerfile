@@ -6,9 +6,11 @@ LABEL description="Kali Linux sandbox with MCP servers for agentic penetration t
 # Avoid prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Update CA certificates and configure HTTPS mirror
-# The base image should have ca-certificates, we just need to update them
-RUN apt-get update -o Acquire::https::Verify-Peer=false \
+# Bootstrap CA certificates using the direct CDN mirror over HTTP first,
+# then upgrade to HTTPS once ca-certificates is installed.
+# This avoids the unreliable http.kali.org redirector that causes 403/timeout errors.
+RUN echo "deb http://kali.download/kali kali-rolling main contrib non-free non-free-firmware" > /etc/apt/sources.list \
+    && apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && update-ca-certificates \
     && echo "deb https://kali.download/kali kali-rolling main contrib non-free non-free-firmware" > /etc/apt/sources.list \

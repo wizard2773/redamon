@@ -184,7 +184,7 @@ class ContainerManager:
                 name=container_name,
                 detach=True,
                 network_mode="host",
-                cap_add=["NET_RAW", "NET_ADMIN"],
+                privileged=True,
                 environment={
                     "PROJECT_ID": project_id,
                     "USER_ID": user_id,
